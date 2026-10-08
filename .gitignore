@@ -1,0 +1,7 @@
+.vs/
+.dotnet/
+.nuget/
+**/bin/
+**/obj/
+dist/
+*.csproj.user
