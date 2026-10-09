@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Globalization;
 using System.Security.Cryptography;
 
 namespace BiStudent;
@@ -9,6 +10,7 @@ internal sealed record Lesson(int Id, string Subject, string GroupName, DayOfWee
     public override string ToString() => $"{Subject} · {GroupName} · {Start:hh\\:mm}–{End:hh\\:mm}";
 }
 internal sealed record AttendanceRow(int StudentId, string Name, string GroupName, DateTime? SeenAt, string Method);
+internal sealed record JournalRow(DateOnly Date, string Subject, string GroupName, TimeSpan Start, TimeSpan End, string StudentName, DateTime? SeenAt, string Method);
 
 internal sealed class AttendanceStore
 {
@@ -195,7 +197,7 @@ internal sealed class AttendanceStore
         using var command = connection.CreateCommand();
         command.CommandText = "INSERT OR IGNORE INTO attendance(lesson_id,lesson_date,student_id,seen_at,method) VALUES($lesson,$date,$student,$seen,$method)";
         command.Parameters.AddWithValue("$lesson", lessonId);
-        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd"));
+        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$student", studentId);
         command.Parameters.AddWithValue("$seen", DateTime.Now.ToString("O"));
         command.Parameters.AddWithValue("$method", method);
@@ -208,7 +210,7 @@ internal sealed class AttendanceStore
         using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM attendance WHERE lesson_id=$lesson AND lesson_date=$date AND student_id=$student";
         command.Parameters.AddWithValue("$lesson", lessonId);
-        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd"));
+        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$student", studentId);
         command.ExecuteNonQuery();
     }
@@ -223,11 +225,30 @@ internal sealed class AttendanceStore
             WHERE s.group_name=$group ORDER BY s.name COLLATE NOCASE
             """;
         command.Parameters.AddWithValue("$lesson", lessonId);
-        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd"));
+        command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$group", groupName);
         using var reader = command.ExecuteReader();
         var result = new List<AttendanceRow>();
         while (reader.Read()) result.Add(new AttendanceRow(reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.IsDBNull(3) ? null : DateTime.Parse(reader.GetString(3)), reader.GetString(4)));
+        return result;
+    }
+
+    public List<JournalRow> Journal()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH sessions AS (SELECT DISTINCT lesson_id, lesson_date FROM attendance)
+            SELECT x.lesson_date,l.subject,l.group_name,l.start_minutes,l.end_minutes,s.name,a.seen_at,COALESCE(a.method,'')
+            FROM sessions x
+            JOIN lessons l ON l.id=x.lesson_id
+            JOIN students s ON s.group_name=l.group_name
+            LEFT JOIN attendance a ON a.lesson_id=x.lesson_id AND a.lesson_date=x.lesson_date AND a.student_id=s.id
+            ORDER BY x.lesson_date,l.start_minutes,l.subject,s.name COLLATE NOCASE
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new List<JournalRow>();
+        while (reader.Read()) result.Add(new JournalRow(DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture), reader.GetString(1), reader.GetString(2), TimeSpan.FromMinutes(reader.GetInt32(3)), TimeSpan.FromMinutes(reader.GetInt32(4)), reader.GetString(5), reader.IsDBNull(6) ? null : DateTime.Parse(reader.GetString(6)), reader.GetString(7)));
         return result;
     }
 }

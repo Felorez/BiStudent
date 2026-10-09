@@ -184,11 +184,15 @@ internal sealed class LessonForm : Form
 
     private void Save()
     {
-        var validStart = TimeSpan.TryParseExact(start.Text.Trim(), @"hh\:mm", CultureInfo.InvariantCulture, out var startTime);
-        var validEnd = TimeSpan.TryParseExact(end.Text.Trim(), @"hh\:mm", CultureInfo.InvariantCulture, out var endTime);
+        string[] formats = [@"h\:mm", @"hh\:mm"];
+        var validStart = TimeSpan.TryParseExact(start.Text.Trim(), formats, CultureInfo.InvariantCulture, out var startTime);
+        var validEnd = TimeSpan.TryParseExact(end.Text.Trim(), formats, CultureInfo.InvariantCulture, out var endTime);
         if (string.IsNullOrWhiteSpace(subject.Text) || string.IsNullOrWhiteSpace(group.Text) || !validStart || !validEnd || endTime <= startTime)
         { MessageBox.Show(this, "Укажите предмет, группу и корректное время."); return; }
         var weekday = (DayOfWeek)((day.SelectedIndex + 1) % 7);
+        var other = store.Lessons().FirstOrDefault(l => l.Day == weekday && startTime < l.End && l.Start < endTime);
+        if (other is not null)
+        { MessageBox.Show(this, $"Занятие пересекается с «{other}». В одно время может идти только одно занятие, иначе автоматическая отметка не работает.", "Пересечение в расписании"); return; }
         store.AddLesson(subject.Text, group.Text, weekday, startTime, endTime);
         DialogResult = DialogResult.OK; Close();
     }

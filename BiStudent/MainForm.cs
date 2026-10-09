@@ -170,7 +170,18 @@ internal sealed class MainForm : Form
             if (MessageBox.Show(this, "Удалить занятие и его отметки?", "Подтверждение", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
             store.DeleteLesson(id); RefreshSchedule();
         };
-        actions.Controls.Add(start); actions.Controls.Add(stop); actions.Controls.Add(addLesson); actions.Controls.Add(removeLesson);
+        var export = new ModernButton { Text = "Экспорт CSV", Width = 140 };
+        export.Click += (_, _) =>
+        {
+            var rows = store.Journal();
+            if (rows.Count == 0) { MessageBox.Show(this, "Пока нет отметок для экспорта.", "Экспорт"); return; }
+            using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = $"attendance-{DateTime.Today:yyyy-MM-dd}.csv", DefaultExt = "csv", OverwritePrompt = true };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            try { JournalExport.Write(dialog.FileName, rows); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { MessageBox.Show(this, ex.Message, "Не удалось сохранить файл"); return; }
+            status.Text = $"Журнал сохранён: {Path.GetFileName(dialog.FileName)} · строк: {rows.Count}";
+        };
+        actions.Controls.Add(start); actions.Controls.Add(stop); actions.Controls.Add(addLesson); actions.Controls.Add(removeLesson); actions.Controls.Add(export);
         page.Controls.Add(actions, 0, 1);
 
         var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Background };
@@ -198,7 +209,7 @@ internal sealed class MainForm : Form
 
     private void RefreshSchedule()
     {
-        scheduleTable.DataSource = store.Lessons().Select(l => new { l.Id, День = l.Day switch { DayOfWeek.Monday => "Пн", DayOfWeek.Tuesday => "Вт", DayOfWeek.Wednesday => "Ср", DayOfWeek.Thursday => "Чт", DayOfWeek.Friday => "Пт", DayOfWeek.Saturday => "Сб", _ => "Вс" }, Предмет = l.Subject, Группа = l.GroupName, Время = $"{l.Start:hh\\:mm}–{l.End:hh\\:mm}" }).ToList();
+        scheduleTable.DataSource = store.Lessons().Select(l => new { l.Id, День = JournalExport.ShortDay(l.Day), Предмет = l.Subject, Группа = l.GroupName, Время = $"{l.Start:hh\\:mm}–{l.End:hh\\:mm}" }).ToList();
         if (scheduleTable.Columns["Id"] is { } column) column.Visible = false;
         RefreshLesson();
     }

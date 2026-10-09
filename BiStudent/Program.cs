@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -56,6 +57,13 @@ namespace BiStudent
                     var testLesson = dataTest.Lessons().Last();
                     if (!dataTest.MarkPresent(testLesson.Id, DateOnly.FromDateTime(DateTime.Today), testStudent, "Тест")) throw new InvalidOperationException("Отметка не создана.");
                     if (dataTest.MarkPresent(testLesson.Id, DateOnly.FromDateTime(DateTime.Today), testStudent, "Тест")) throw new InvalidOperationException("Создана повторная отметка.");
+                    var journal = dataTest.Journal();
+                    if (!journal.Any(r => r.StudentName == "Тестовый студент" && r.SeenAt is not null)) throw new InvalidOperationException("Журнал не содержит отметку.");
+                    var journalFile = Path.Combine(directory, "journal-test.csv");
+                    JournalExport.Write(journalFile, journal);
+                    var csv = File.ReadAllText(journalFile, Encoding.UTF8);
+                    if (!csv.StartsWith("Дата;День;Предмет;Группа;Время занятия;Студент;Статус;Отмечен;Способ\r\n", StringComparison.Ordinal) || !csv.Contains("Тестовый студент", StringComparison.Ordinal)) throw new InvalidOperationException("Экспорт журнала некорректен.");
+                    if (JournalExport.Escape("a;b") != "\"a;b\"" || JournalExport.Escape("=1+1") != "'=1+1" || JournalExport.Escape("say \"hi\"") != "\"say \"\"hi\"\"\"") throw new InvalidOperationException("Экранирование CSV некорректно.");
                     var migrationDirectory = Path.Combine(directory, "migration-test");
                     Directory.CreateDirectory(migrationDirectory);
                     var migrationFile = Path.Combine(migrationDirectory, "attendance.db");
