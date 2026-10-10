@@ -1,5 +1,4 @@
 using OpenCvSharp;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 
@@ -116,25 +115,26 @@ internal static class CameraDevices
         return null;
     }
 
-    public static int ResolveIndex(AttendanceStore store, IReadOnlyList<CameraDevice> devices)
+    public static int ResolveIndex(ClientSettings settings, IReadOnlyList<CameraDevice> devices)
     {
-        var id = store.GetSetting("camera.id");
+        var id = settings.CameraId;
         if (id is not null && Find(devices, id) is { } selected) return selected.Index;
-        var name = store.GetSetting("camera.name");
+        var name = settings.CameraName;
         if (name is not null)
         {
             foreach (var device in devices)
                 if (device.Name == name) return device.Index;
         }
-        if (int.TryParse(store.GetSetting("camera.index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
+        if (settings.CameraIndex is { } index
             && index >= 0 && (devices.Count == 0 || index < devices.Count)) return index;
         return 0;
     }
 
-    public static void Save(AttendanceStore store, CameraDevice device)
+    public static void Save(ClientSettings settings, CameraDevice device)
     {
-        store.SetSetting("camera.id", device.Id);
-        store.SetSetting("camera.name", device.Name);
-        store.SetSetting("camera.index", device.Index.ToString(CultureInfo.InvariantCulture));
+        settings.CameraId = device.Id;
+        settings.CameraName = device.Name;
+        settings.CameraIndex = device.Index;
+        settings.Save();
     }
 }

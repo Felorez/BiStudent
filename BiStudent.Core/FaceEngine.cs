@@ -3,9 +3,9 @@ using OpenCvSharp.Dnn;
 
 namespace BiStudent;
 
-internal sealed record FaceMatch(OpenCvSharp.Rect Bounds, int? StudentId, double Similarity);
+public sealed record FaceMatch(OpenCvSharp.Rect Bounds, int? StudentId, double Similarity);
 
-internal sealed class FaceEngine : IDisposable
+public sealed class FaceEngine : IDisposable
 {
     private static readonly (double X, double Y)[] AlignedLandmarks =
     [
