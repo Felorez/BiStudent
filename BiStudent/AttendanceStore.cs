@@ -193,7 +193,7 @@ internal sealed class AttendanceStore
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "INSERT OR IGNORE INTO attendance(lesson_id,lesson_date,student_id,seen_at,method) VALUES($lesson,$date,$student,$seen,$method)";
+        command.CommandText = "INSERT OR IGNORE INTO attendance(lesson_id,lesson_date,student_id,seen_at,method) SELECT $lesson,$date,$student,$seen,$method WHERE EXISTS(SELECT 1 FROM lessons WHERE id=$lesson) AND EXISTS(SELECT 1 FROM students WHERE id=$student)";
         command.Parameters.AddWithValue("$lesson", lessonId);
         command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd"));
         command.Parameters.AddWithValue("$student", studentId);
