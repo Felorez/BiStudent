@@ -1,5 +1,6 @@
 using System.Drawing.Drawing2D;
 using System.ComponentModel;
+using System.Collections.Concurrent;
 
 namespace BiStudent;
 
@@ -16,7 +17,8 @@ internal static class Theme
     public static readonly Color Line = ColorTranslator.FromHtml("#334155");
     public static readonly Color Green = ColorTranslator.FromHtml("#36CFA5");
     public static readonly Color Red = ColorTranslator.FromHtml("#F27D86");
-    public static Font Font(float size, FontStyle style = FontStyle.Regular) => new("Segoe UI", size, style);
+    private static readonly ConcurrentDictionary<(float Size, FontStyle Style), Lazy<Font>> fonts = new();
+    public static Font Font(float size, FontStyle style = FontStyle.Regular) => fonts.GetOrAdd((size, style), key => new Lazy<Font>(() => new Font("Segoe UI", key.Size, key.Style))).Value;
 }
 
 internal sealed class ModernButton : Control
@@ -49,6 +51,14 @@ internal sealed class ModernButton : Control
         };
     }
 
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        if (!Enabled) { hovered = false; pressed = false; hoverProgress = 0f; animation.Stop(); }
+        Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+        Invalidate();
+        base.OnEnabledChanged(e);
+    }
+
     protected override void OnMouseEnter(EventArgs e) { hovered = true; animation.Start(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hovered = false; pressed = false; animation.Start(); base.OnMouseLeave(e); }
     protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); } base.OnMouseDown(e); }
@@ -58,12 +68,12 @@ internal sealed class ModernButton : Control
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var baseColor = Primary ? Theme.Accent : Theme.Surface;
         var hoverColor = Primary ? Theme.AccentHover : Theme.SurfaceHover;
-        var color = Mix(baseColor, hoverColor, hoverProgress);
-        if (pressed) color = ControlPaint.Dark(color, .12f);
+        var color = Enabled ? Mix(baseColor, hoverColor, hoverProgress) : Mix(Theme.Surface, Theme.Background, .45f);
+        if (Enabled && pressed) color = ControlPaint.Dark(color, .12f);
         using var path = Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 12);
         using var brush = new SolidBrush(color);
         e.Graphics.FillPath(brush, path);
-        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Theme.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
     private static Color Mix(Color a, Color b, float amount) => Color.FromArgb((int)(a.R + (b.R - a.R) * amount), (int)(a.G + (b.G - a.G) * amount), (int)(a.B + (b.B - a.B) * amount));
