@@ -49,6 +49,10 @@ internal sealed class AttendanceStore
               method TEXT NOT NULL,
               PRIMARY KEY(lesson_id, lesson_date, student_id)
             );
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             """;
         command.ExecuteNonQuery();
         using var schema = connection.CreateCommand();
@@ -73,6 +77,28 @@ internal sealed class AttendanceStore
         pragma.CommandText = "PRAGMA foreign_keys=ON";
         pragma.ExecuteNonQuery();
         return connection;
+    }
+
+    public string? GetSetting(string key)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM settings WHERE key=$key";
+        command.Parameters.AddWithValue("$key", key);
+        return command.ExecuteScalar() as string;
+    }
+
+    public void SetSetting(string key, string value)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO settings(key,value) VALUES($key,$value)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
     }
 
     public List<Student> Students()

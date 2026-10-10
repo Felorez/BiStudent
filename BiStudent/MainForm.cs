@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
@@ -25,11 +26,14 @@ internal sealed class MainForm : Form
     private Task? cameraStopTask;
     private ModernButton? startButton;
     private ModernButton? stopButton;
+    private ComboBox? cameraSelect;
+    private bool hasCameraDevices;
     private volatile Lesson? activeLesson;
     private DateOnly activeDate;
     private int trainingRevision;
     private int scheduleRevision;
     private int cameraFailed;
+    private int cameraReconnecting;
     private int cameraRunRevision;
     private int pendingFrame;
     private int navigationRequest;
@@ -100,8 +104,9 @@ internal sealed class MainForm : Form
         studentsNav.Click += async (_, _) =>
         {
             if (closingCamera) return;
+            var request = ++navigationRequest;
             await StopCameraAsync();
-            if (closingCamera || IsDisposed || Disposing) return;
+            if (closingCamera || IsDisposed || Disposing || request != navigationRequest) return;
             ShowStudents();
         };
         cameraNav.Click += (_, _) => { if (!closingCamera) { navigationRequest++; ShowCamera(); } };
@@ -143,7 +148,7 @@ internal sealed class MainForm : Form
     private void ShowStudents()
     {
         cameraPage = false;
-        startButton = null; stopButton = null;
+        startButton = null; stopButton = null; cameraSelect = null;
         studentsNav.Selected = true; studentsNav.Invalidate(); cameraNav.Selected = false; cameraNav.Invalidate();
         var page = Page("Студенты", "Регистрация и список студентов");
         var actions = Actions();
@@ -187,6 +192,31 @@ internal sealed class MainForm : Form
         var stop = new ModernButton { Text = "Остановить", Width = 135 };
         stop.Click += async (_, _) => await StopCameraAsync();
         startButton = start; stopButton = stop;
+        var devices = CameraDevices.List();
+        hasCameraDevices = devices.Count > 0;
+        var selectedIndex = CameraDevices.ResolveIndex(store, devices);
+        var camera = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(6, 5, 0, 5),
+            BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, FlatStyle = FlatStyle.Flat, Font = Theme.Font(11),
+            DrawMode = DrawMode.OwnerDrawFixed
+        };
+        camera.ItemHeight = camera.Font.Height + 8;
+        camera.DrawItem += (_, e) =>
+        {
+            using var background = new SolidBrush(e.Index >= 0 && (e.State & DrawItemState.Selected) != 0 ? Theme.Accent : Theme.SurfaceHover);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            if (e.Index < 0) return;
+            var bounds = new Rectangle(e.Bounds.X + 8, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 16), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, camera.Items[e.Index]?.ToString() ?? "", camera.Font, bounds,
+                camera.Enabled ? Theme.Text : Theme.Muted,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        };
+        if (hasCameraDevices) camera.Items.AddRange(devices.ToArray());
+        else camera.Items.Add(new CameraDevice(0, "Камера по умолчанию", ""));
+        camera.SelectedIndex = hasCameraDevices ? Math.Max(0, devices.FindIndex(d => d.Index == selectedIndex)) : 0;
+        camera.SelectedIndexChanged += (_, _) => { if (camera.SelectedItem is CameraDevice device) CameraDevices.Save(store, device); };
+        cameraSelect = camera;
         var addLesson = new ModernButton { Text = "+ Занятие", Width = 128 };
         addLesson.Click += (_, _) => { using var form = new LessonForm(store); if (form.ShowDialog(this) == DialogResult.OK) { Interlocked.Increment(ref scheduleRevision); RefreshSchedule(); } };
         var removeLesson = new ModernButton { Text = "Удалить занятие", Width = 160 };
@@ -204,7 +234,11 @@ internal sealed class MainForm : Form
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 61)); body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 39));
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Margin = new Padding(0, 0, 12, 0) };
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); left.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); left.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
-        left.Controls.Add(lessonLabel, 0, 0);
+        var cameraHeading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        cameraHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cameraHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+        cameraHeading.Controls.Add(lessonLabel, 0, 0); cameraHeading.Controls.Add(camera, 1, 0);
+        left.Controls.Add(cameraHeading, 0, 0);
         var videoCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; videoCard.Controls.Add(preview); left.Controls.Add(videoCard, 0, 1);
         left.Controls.Add(status, 0, 2); body.Controls.Add(left, 0, 0);
 
@@ -258,7 +292,7 @@ internal sealed class MainForm : Form
         var rows = store.Attendance(activeLesson.Id, activeDate, activeLesson.GroupName);
         attendanceTable.DataSource = rows.Select(r => new { r.StudentId, Студент = r.Name, Статус = r.SeenAt is null ? "Нет отметки" : "Присутствует", Время = r.SeenAt?.ToString("HH:mm") ?? "—" }).ToList();
         if (attendanceTable.Columns["StudentId"] is { } column) column.Visible = false;
-        if (Volatile.Read(ref cameraFailed) == 0) status.Text = $"Присутствуют {rows.Count(r => r.SeenAt is not null)} из {rows.Count} · Фото на экране может обмануть распознавание";
+        if (Volatile.Read(ref cameraFailed) == 0 && Volatile.Read(ref cameraReconnecting) == 0) status.Text = $"Присутствуют {rows.Count(r => r.SeenAt is not null)} из {rows.Count} · Фото на экране может обмануть распознавание";
     }
 
     private void ChangeMark(bool present)
@@ -283,12 +317,16 @@ internal sealed class MainForm : Form
         cameraCancellation?.Dispose();
         cameraCancellation = new CancellationTokenSource();
         Interlocked.Exchange(ref cameraFailed, 0);
+        Interlocked.Exchange(ref cameraReconnecting, 0);
         var token = cameraCancellation.Token;
         var run = ++cameraRunRevision;
         Interlocked.Exchange(ref pendingFrame, 0);
         status.Text = "Подключение к камере…";
         UpdateCameraButtons(true);
-        cameraTask = Task.Run(() => CameraLoop(token, run));
+        var device = cameraSelect?.SelectedItem as CameraDevice ?? new CameraDevice(0, "Камера по умолчанию", "");
+        var named = hasCameraDevices;
+        if (named) try { CameraDevices.Save(store, device); } catch { }
+        cameraTask = Task.Run(() => CameraLoop(token, run, device, named));
         _ = cameraTask.ContinueWith(_ =>
         {
             if (run == cameraRunRevision && !IsDisposed) UpdateCameraButtons(false);
@@ -316,6 +354,7 @@ internal sealed class MainForm : Form
         }
         cameraCancellation?.Dispose(); cameraCancellation = null;
         var old = preview.Image; preview.Image = null; old?.Dispose();
+        Interlocked.Exchange(ref cameraReconnecting, 0);
         UpdateCameraButtons(false);
         if (wasRunning && Volatile.Read(ref cameraFailed) == 0) status.Text = "Камера остановлена";
     }
@@ -324,15 +363,24 @@ internal sealed class MainForm : Form
     {
         if (startButton is not null) startButton.Enabled = !running;
         if (stopButton is not null) stopButton.Enabled = running;
+        if (cameraSelect is not null) cameraSelect.Enabled = !running && hasCameraDevices;
     }
 
-    private void CameraLoop(CancellationToken token, int run)
+    private void CameraLoop(CancellationToken token, int run, CameraDevice device, bool named)
     {
+        VideoCapture? capture = null;
         try
         {
-            using var capture = new VideoCapture(0);
-            if (!capture.IsOpened()) throw new InvalidOperationException("Веб-камера не найдена или занята другой программой.");
-            capture.FrameWidth = 960; capture.FrameHeight = 540;
+            var index = device.Index;
+            if (named)
+            {
+                var current = CameraDevices.Find(CameraDevices.List(), device.Id)
+                    ?? throw new InvalidOperationException("Выбранная камера не подключена. Подключите её или выберите другую.");
+                index = current.Index;
+            }
+            capture = CameraDevices.Open(index, 960, 540, !named);
+            var lastFrame = Stopwatch.StartNew();
+            var reconnecting = false;
             using var engine = new FaceEngine();
             engine.Train(store.Samples());
             var revision = Volatile.Read(ref trainingRevision);
@@ -343,9 +391,77 @@ internal sealed class MainForm : Form
             var students = store.Students();
             var names = students.ToDictionary(s => s.Id, s => s.Name);
             using var frame = new Mat();
+            lastFrame.Restart();
+            var firstFrame = true;
             while (!token.IsCancellationRequested)
             {
-                if (!capture.Read(frame) || frame.Empty()) { Thread.Sleep(80); continue; }
+                if (reconnecting && capture is null)
+                {
+                    var reconnectIndex = device.Index;
+                    if (named)
+                    {
+                        var current = CameraDevices.Find(CameraDevices.List(), device.Id);
+                        if (current is null)
+                        {
+                            if (token.WaitHandle.WaitOne(2000)) break;
+                            continue;
+                        }
+                        reconnectIndex = current.Index;
+                    }
+                    try { capture = CameraDevices.Open(reconnectIndex, 960, 540, !named); }
+                    catch
+                    {
+                        if (token.WaitHandle.WaitOne(2000)) break;
+                        continue;
+                    }
+                    lastFrame.Restart();
+                }
+                bool ok;
+                try { ok = capture!.Read(frame); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { ok = false; }
+                if (!ok || frame.Empty())
+                {
+                    if (lastFrame.Elapsed >= TimeSpan.FromSeconds(3))
+                    {
+                        if (!reconnecting)
+                        {
+                            reconnecting = true;
+                            Interlocked.Exchange(ref cameraReconnecting, 1);
+                            SafeUi(() =>
+                            {
+                                if (run == cameraRunRevision) status.Text = "Нет кадров с камеры — переподключение…";
+                            });
+                        }
+                        capture?.Dispose(); capture = null;
+                        if (token.WaitHandle.WaitOne(2000)) break;
+                        continue;
+                    }
+                    if (token.WaitHandle.WaitOne(80)) break;
+                    continue;
+                }
+                lastFrame.Restart();
+                if (firstFrame)
+                {
+                    firstFrame = false;
+                    SafeUi(() =>
+                    {
+                        if (run != cameraRunRevision) return;
+                        if (activeLesson is null) status.Text = "Камера работает · нет текущего занятия";
+                        else RefreshAttendance();
+                    });
+                }
+                if (reconnecting)
+                {
+                    reconnecting = false;
+                    Interlocked.Exchange(ref cameraReconnecting, 0);
+                    streak.Clear();
+                    SafeUi(() =>
+                    {
+                        if (run != cameraRunRevision) return;
+                        if (activeLesson is null) status.Text = "Камера снова работает";
+                        else RefreshAttendance();
+                    });
+                }
                 var currentRevision = Volatile.Read(ref trainingRevision);
                 if (revision != currentRevision)
                 {
@@ -420,6 +536,7 @@ internal sealed class MainForm : Form
                 status.Text = $"Камера остановлена из-за ошибки: {ex.Message}";
             });
         }
+        finally { capture?.Dispose(); }
     }
 
     private void SafeUi(Action action, Action? failure = null)

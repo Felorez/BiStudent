@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
+using System.Diagnostics;
 using System.Globalization;
 
 namespace BiStudent;
@@ -43,6 +44,11 @@ internal sealed class EnrollmentForm : Form
     private readonly Label feedback = FormStyle.Caption("Сделайте три снимка: прямо, немного влево и немного вправо.");
     private readonly List<byte[]> samples = new();
     private VideoCapture? capture;
+    private int cameraIndex;
+    private string? cameraId;
+    private readonly Stopwatch lastFrame = new();
+    private readonly Stopwatch reconnectAttempt = new();
+    private bool reconnecting;
     private FaceEngine? engine;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 110 };
     private Mat? latestFrame;
@@ -91,21 +97,78 @@ internal sealed class EnrollmentForm : Form
     {
         try
         {
-            capture = new VideoCapture(0, VideoCaptureAPIs.DSHOW);
-            if (!capture.IsOpened()) { capture.Dispose(); capture = new VideoCapture(0); }
-            if (!capture.IsOpened()) throw new InvalidOperationException("Камера не найдена или занята.");
-            capture.FrameWidth = 800; capture.FrameHeight = 500;
+            var devices = CameraDevices.List();
+            cameraIndex = devices.Count > 0 ? CameraDevices.ResolveIndex(store, devices) : 0;
+            var device = devices.FirstOrDefault(d => d.Index == cameraIndex);
+            cameraId = device?.Id;
+            var index = cameraIndex;
+            if (cameraId is not null)
+            {
+                var current = CameraDevices.Find(CameraDevices.List(), cameraId)
+                    ?? throw new InvalidOperationException("Выбранная камера не подключена. Подключите её или выберите другую.");
+                index = current.Index;
+                device = current;
+            }
+            capture = CameraDevices.Open(index, 800, 500, device is null);
             engine = new FaceEngine();
+            lastFrame.Restart();
             timer.Start();
+            if (device is not null) try { CameraDevices.Save(store, device); } catch { }
         }
-        catch (Exception ex) { feedback.Text = ex.Message; }
+        catch (Exception ex) { capture?.Dispose(); capture = null; feedback.Text = ex.Message; }
     }
 
     private void ReadFrame()
     {
-        if (capture is null || engine is null) return;
+        if (engine is null) return;
+        if (reconnecting && capture is null)
+        {
+            if (reconnectAttempt.Elapsed < TimeSpan.FromSeconds(2)) return;
+            reconnectAttempt.Restart();
+            var index = cameraIndex;
+            if (cameraId is not null)
+            {
+                var current = CameraDevices.Find(CameraDevices.List(), cameraId);
+                if (current is null) return;
+                index = current.Index;
+            }
+            try { capture = CameraDevices.Open(index, 800, 500, cameraId is null); }
+            catch { return; }
+            lastFrame.Restart();
+        }
+        if (capture is null) return;
         using var frame = new Mat();
-        if (!capture.Read(frame) || frame.Empty()) return;
+        bool ok;
+        try { ok = capture.Read(frame); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { ok = false; }
+        if (!ok || frame.Empty())
+        {
+            latestFace = null;
+            latestFrame?.Dispose(); latestFrame = null;
+            if (lastFrame.Elapsed >= TimeSpan.FromSeconds(3))
+            {
+                capture.Dispose(); capture = null;
+                if (!reconnecting)
+                {
+                    reconnecting = true;
+                    feedback.Text = "Камера не отвечает — переподключение…";
+                }
+                reconnectAttempt.Restart();
+            }
+            return;
+        }
+        lastFrame.Restart();
+        if (reconnecting)
+        {
+            reconnecting = false;
+            feedback.Text = samples.Count switch
+            {
+                0 => "Камера снова работает",
+                1 => "1/3 · Теперь немного поверните голову влево.",
+                2 => "2/3 · Теперь немного поверните голову вправо.",
+                _ => "3/3 · Готово, сохраните образцы."
+            };
+        }
         var faces = engine.Detect(frame);
         latestFace = faces.Count == 1 ? faces[0] : null;
         latestFrame?.Dispose(); latestFrame = frame.Clone();
