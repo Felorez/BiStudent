@@ -73,6 +73,10 @@ namespace BiStudent
                     }
                     var migrated = new AttendanceStore(migrationDirectory);
                     if (migrated.Students().Single().SampleCount != 0) throw new InvalidOperationException("Старые образцы не отделены от новых.");
+                    migrated.SetSetting("camera.name", "Тест");
+                    migrated.SetSetting("camera.name", "Другая камера");
+                    if (migrated.GetSetting("camera.name") != "Другая камера" || migrated.GetSetting("missing") is not null)
+                        throw new InvalidOperationException("Настройки камеры не сохраняются.");
                     migrated.AddLesson("Тест", "Т-2", DateTime.Today.DayOfWeek, TimeSpan.Zero, new TimeSpan(23, 59, 0));
                     var migrationLesson = migrated.Lessons().Single();
                     migrated.MarkPresent(migrationLesson.Id, DateOnly.FromDateTime(DateTime.Today), 1, "Тест");
