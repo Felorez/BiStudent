@@ -18,6 +18,7 @@
     <PackageReference Include="OpenCvSharp4.official.runtime.linux-x64" Version="4.13.0.20260627" />
   </ItemGroup>
   <ItemGroup>
-    <Content Update="seed\*.csv" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="seed\students.demo.csv" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="seed\students.local.csv" Condition="Exists('seed\students.local.csv')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
   </ItemGroup>
 </Project>
