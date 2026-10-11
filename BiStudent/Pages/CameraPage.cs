@@ -12,8 +12,12 @@ internal sealed class CameraPage : Page
 
     private readonly ModernComboBox lessons = new() { Dock = DockStyle.Fill };
     private readonly ModernComboBox cameras = new() { Dock = DockStyle.Fill };
-    private readonly ModernButton start = new() { Text = "▶ Запустить", Primary = true, Width = 165 };
-    private readonly ModernButton stop = new() { Text = "■ Остановить", Width = 165 };
+    private readonly ModernButton start = new() { Text = "▶ Запустить", Primary = true, Width = 140 };
+    private readonly ModernButton stop = new() { Text = "■ Остановить", Width = 140 };
+    private readonly ModernButton settingsButton = new() { Text = "⚙ Настройки", Width = 136 };
+    private readonly CheckBox calibration = new() { Text = "Калибровка", AutoSize = true, ForeColor = Theme.Text, BackColor = Theme.Surface, Font = Theme.Font(9.5f), Margin = new Padding(6, 12, 0, 0), Cursor = Cursors.Hand };
+    private volatile bool calibrate;
+    private double matchThreshold = FaceEngine.DefaultMatchThreshold;
     private readonly ModernButton finish = new() { Text = "Завершить пару", Danger = true, Width = 180 };
     private readonly PictureBox preview = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Sidebar };
     private readonly Label placeholder = Ui.Label("Камера выключена. Выберите пару и нажмите «Запустить».\nОтметка ставится после нескольких кадров подряд.", 10, Theme.Muted);
@@ -57,7 +61,10 @@ internal sealed class CameraPage : Page
         layout.Controls.Add(Field("Пара", lessons), 0, 0);
         layout.Controls.Add(Field("Камера", cameras), 0, 1);
         var buttons = Ui.Row();
-        buttons.Controls.Add(start); buttons.Controls.Add(stop);
+        buttons.Controls.Add(start); buttons.Controls.Add(stop); buttons.Controls.Add(settingsButton); buttons.Controls.Add(calibration);
+        new ToolTip().SetToolTip(calibration, "Показывать лучшего кандидата и сходство даже ниже порога — чтобы подобрать порог под условия аудитории");
+        calibration.CheckedChanged += (_, _) => calibrate = calibration.Checked;
+        settingsButton.Click += async (_, _) => await OpenSettingsAsync();
         layout.Controls.Add(buttons, 0, 2);
         banner.TextAlign = ContentAlignment.MiddleLeft;
         banner.AutoEllipsis = true;
@@ -142,9 +149,11 @@ internal sealed class CameraPage : Page
             var dayTask = Api.DayAsync(date);
             var automationTask = Api.AutomationAsync();
             var statusTask = Api.RecognitionStatusAsync();
-            await Task.WhenAll(dayTask, automationTask, statusTask);
+            var settingsTask = Api.RecognitionSettingsAsync();
+            await Task.WhenAll(dayTask, automationTask, statusTask, settingsTask);
             if (IsDisposed) return;
             automation = await automationTask;
+            matchThreshold = (await settingsTask).MatchThreshold;
             var status = await statusTask;
             recognitionOk = status.Ok;
             SetBanner(status.Ok ? "" : status.Message);
@@ -434,13 +443,16 @@ internal sealed class CameraPage : Page
         using var graphics = Graphics.FromImage(bitmap);
         foreach (var face in result.Faces)
         {
-            var color = face.StudentId is null ? Theme.Red : face.OtherGroup ? Theme.Muted
+            var candidate = calibrate && face.StudentId is null && face.CandidateName is not null;
+            var color = candidate ? Theme.Yellow : face.StudentId is null ? Theme.Red : face.OtherGroup ? Theme.Muted
                 : face.Marked || face.AlreadyMarked ? Theme.Accent : Theme.Green;
             var bounds = new Rectangle((int)(face.X * scale), (int)(face.Y * scale),
                 Math.Max(1, (int)(face.W * scale)), Math.Max(1, (int)(face.H * scale)));
             using var pen = new Pen(color, 3);
             graphics.DrawRectangle(pen, bounds);
-            var text = face.StudentId is null ? "Неизвестный"
+            var text = candidate ? $"? {face.CandidateName} · {face.Similarity * 100:0}% (нужно ≥ {matchThreshold * 100:0}%)"
+                : face.StudentId is null ? "Неизвестный"
+                : calibrate ? $"{face.Name ?? "Студент"} · {face.Similarity * 100:0}% · отрыв {face.Margin * 100:0}%{(face.OtherGroup ? " · другая группа" : "")}"
                 : $"{face.Name ?? "Студент"} · {face.Similarity * 100:0}%{(face.OtherGroup ? " · другая группа" : "")}";
             var size = TextRenderer.MeasureText(text, Theme.Font(10, FontStyle.Bold));
             var label = new Rectangle(Math.Clamp(bounds.Left, 0, Math.Max(0, bitmap.Width - size.Width - 12)),
@@ -490,12 +502,25 @@ internal sealed class CameraPage : Page
         banner.Text = string.IsNullOrWhiteSpace(message) ? "" : $"⚠  {message}";
     }
 
+    private async Task OpenSettingsAsync()
+    {
+        using var dialog = new RecognitionSettingsDialog(Api);
+        if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SavedSettings is not { } settings || IsDisposed) return;
+        matchThreshold = settings.MatchThreshold;
+        if (automation is not null) automation = automation with { FramesInRow = settings.FramesInRow };
+        if (selectedLesson is not null && !running)
+            placeholder.Text = $"Камера выключена. Выберите пару и нажмите «Запустить».\nОтметка ставится после {settings.FramesInRow} кадров подряд.";
+        Ui.Toast(this, "Настройки распознавания сохранены");
+        await Task.CompletedTask;
+    }
+
     private void SetControls()
     {
         lessons.Enabled = !running && !finishing && !manualBusy && lessons.Items.Count > 0;
         cameras.Enabled = !running && cameras.Items.Count > 0;
         start.Enabled = !running && !finishing && !manualBusy && recognitionOk && selectedLesson is not null && cameras.SelectedItem is CameraDevice;
         stop.Enabled = running;
+        settingsButton.Enabled = !running && !finishing && !loading;
         finish.Enabled = !finishing && !manualBusy && selectedLesson is not null;
         attendance.Enabled = !manualBusy && !finishing;
     }

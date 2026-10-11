@@ -63,6 +63,9 @@ internal sealed class ApiClient : IDisposable
 
     public Task<AutomationSettingsDto> AutomationAsync() => GetAsync<AutomationSettingsDto>("api/settings/automation");
     public Task<EnrollResultDto> RecognitionStatusAsync() => GetAsync<EnrollResultDto>("api/recognition/status");
+    public Task<RecognitionSettingsDto> RecognitionSettingsAsync() => GetAsync<RecognitionSettingsDto>("api/settings/recognition");
+    public Task<RecognitionSettingsDto> SaveRecognitionSettingsAsync(RecognitionSettingsDto settings) =>
+        RequestAsync<RecognitionSettingsDto>(HttpMethod.Put, "api/settings/recognition", Json(settings));
     public Task<DashboardDto> DashboardAsync(CancellationToken cancellationToken = default) =>
         RequestAsync<DashboardDto>(HttpMethod.Get, "api/dashboard", cancellationToken: cancellationToken);
     public Task<ReportDto> ReportAsync() => GetAsync<ReportDto>("api/report");
@@ -90,8 +93,8 @@ internal sealed class ApiClient : IDisposable
     public Task DeleteStudentAsync(int id) => RequestAsync(HttpMethod.Delete, $"api/students/{id}");
     public Task<ImportResultDto> ImportStudentsAsync(string csv) =>
         RequestAsync<ImportResultDto>(HttpMethod.Post, "api/students/import", new StringContent(csv, Encoding.UTF8, "text/csv"));
-    public Task<EnrollResultDto> EnrollAsync(int studentId, List<byte[]> images) =>
-        RequestAsync<EnrollResultDto>(HttpMethod.Post, $"api/students/{studentId}/enroll", Json(new EnrollRequest(images)), timeout: LongTimeout);
+    public Task<EnrollResultDto> EnrollAsync(int studentId, List<byte[]> images, bool allowSimilar = false) =>
+        RequestAsync<EnrollResultDto>(HttpMethod.Post, $"api/students/{studentId}/enroll", Json(new EnrollRequest(images, allowSimilar)), timeout: LongTimeout);
 
     public Task<List<AttendanceRowDto>> AttendanceAsync(int slotId, DateOnly date, CancellationToken cancellationToken = default) =>
         RequestAsync<List<AttendanceRowDto>>(HttpMethod.Get, $"api/lessons/{slotId}/{QueryDate(date)}/attendance", cancellationToken: cancellationToken);

@@ -3,7 +3,10 @@ using OpenCvSharp.Dnn;
 
 namespace BiStudent;
 
-public sealed record FaceMatch(OpenCvSharp.Rect Bounds, int? StudentId, double Similarity);
+public sealed record FaceMatch(OpenCvSharp.Rect Bounds, int? StudentId, double Similarity, int? CandidateId = null, double Margin = 0);
+
+public sealed record SampleQuality(bool Ok, string? Problem, int FaceSize, double Sharpness, double Brightness);
+public sealed record CapturedSample(byte[] Image, float[] Embedding);
 
 public sealed class FaceEngine : IDisposable
 {
@@ -21,8 +24,14 @@ public sealed class FaceEngine : IDisposable
 
     // OpenCV Zoo uses 0.363 for cosine matching. A slightly higher threshold
     // and a margin between different students reduce accidental attendance marks.
-    public const double MatchThreshold = 0.43;
-    public const double MinimumMargin = 0.06;
+    public const double DefaultMatchThreshold = 0.43;
+    public const double DefaultMinimumMargin = 0.06;
+    public const int MinimumSampleFace = 100;
+    public const double MinimumSharpness = 40;
+    public const double MinimumBrightness = 50;
+    public const double MaximumBrightness = 210;
+    public double MatchThreshold { get; set; } = DefaultMatchThreshold;
+    public double MinimumMargin { get; set; } = DefaultMinimumMargin;
 
     public FaceEngine()
     {
@@ -55,7 +64,9 @@ public sealed class FaceEngine : IDisposable
             var bounds = Bounds(faces, row, frame.Width, frame.Height);
             if (bounds.Width < 65 || bounds.Height < 65) continue;
             int? id = null;
+            int? candidateId = null;
             double best = 0;
+            double margin = 0;
             if (enrolled.Count > 0)
             {
                 using var aligned = Align(frame, faces, row);
@@ -71,11 +82,13 @@ public sealed class FaceEngine : IDisposable
                 if (ranked.Length > 0)
                 {
                     best = ranked[0].Value;
-                    if (best >= MatchThreshold && (ranked.Length == 1 || best - ranked[1].Value >= MinimumMargin))
-                        id = ranked[0].Key;
+                    candidateId = ranked[0].Key;
+                    margin = ranked.Length == 1 ? best : best - ranked[1].Value;
+                    if (best >= MatchThreshold && margin >= MinimumMargin)
+                        id = candidateId;
                 }
             }
-            matches.Add(new FaceMatch(bounds, id, best));
+            matches.Add(new FaceMatch(bounds, id, best, candidateId, margin));
         }
         return matches;
     }
@@ -101,6 +114,68 @@ public sealed class FaceEngine : IDisposable
         using var aligned = Align(frame, faces, faceIndex);
         Cv2.ImEncode(".png", aligned, out var bytes);
         return bytes;
+    }
+
+    public SampleQuality AssessFrame(Mat frame)
+    {
+        using var faces = FindFaces(frame);
+        if (faces.Rows == 0)
+            return new SampleQuality(false, "В кадре нет лица", 0, 0, 0);
+        if (faces.Rows != 1)
+            return new SampleQuality(false, "В кадре несколько лиц — оставьте одного человека", 0, 0, 0);
+
+        var bounds = Bounds(faces, 0, frame.Width, frame.Height);
+        var faceSize = Math.Min(bounds.Width, bounds.Height);
+        if (faceSize < MinimumSampleFace)
+            return new SampleQuality(false, "Лицо слишком далеко — подойдите ближе к камере", faceSize, 0, 0);
+
+        using var aligned = Align(frame, faces, 0);
+        using var gray = new Mat();
+        Cv2.CvtColor(aligned, gray, ColorConversionCodes.BGR2GRAY);
+        using var laplacian = new Mat();
+        Cv2.Laplacian(gray, laplacian, MatType.CV_64F);
+        Cv2.MeanStdDev(laplacian, out _, out var deviation);
+        var sharpness = deviation.Val0 * deviation.Val0;
+        var brightness = Cv2.Mean(gray).Val0;
+        string? problem = null;
+        if (sharpness < MinimumSharpness)
+            problem = "Кадр размыт — не двигайтесь";
+        else if (brightness < MinimumBrightness)
+            problem = "Слишком темно — добавьте света";
+        else if (brightness > MaximumBrightness)
+            problem = "Лицо засвечено — уберите яркий свет за спиной";
+        return new SampleQuality(problem is null, problem, faceSize, sharpness, brightness);
+    }
+
+    public CapturedSample CaptureChecked(Mat frame)
+    {
+        var quality = AssessFrame(frame);
+        if (!quality.Ok) throw new InvalidOperationException(quality.Problem);
+        var image = CaptureSample(frame, requireSingle: true);
+        return new CapturedSample(image, Embedding(image));
+    }
+
+    public float[] Embedding(byte[] alignedImage)
+    {
+        using var aligned = Cv2.ImDecode(alignedImage, ImreadModes.Color);
+        if (aligned.Empty() || aligned.Width != 112 || aligned.Height != 112)
+            throw new InvalidOperationException("Образец лица должен иметь размер 112×112.");
+        return Feature(aligned);
+    }
+
+    public static double Similarity(float[] a, float[] b) => Dot(a, b);
+
+    public (int StudentId, double Similarity)? MostSimilar(float[] vector, int excludeStudentId)
+    {
+        (int StudentId, double Similarity)? best = null;
+        foreach (var sample in enrolled)
+        {
+            if (sample.StudentId == excludeStudentId) continue;
+            var similarity = Similarity(vector, sample.Vector);
+            if (best is null || similarity > best.Value.Similarity)
+                best = (sample.StudentId, similarity);
+        }
+        return best;
     }
 
     private Mat FindFaces(Mat frame)
