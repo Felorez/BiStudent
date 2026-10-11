@@ -9,7 +9,7 @@ public sealed record TokenResponse(string AccessToken, long ExpiresIn);
 public sealed record TeacherDto(int Id, string FullName, string Login);
 
 public sealed record GroupDto(int Id, string Name, int Students, int WithFace);
-public sealed record StudentDto(int Id, string FullName, int GroupId, bool HasFace);
+public sealed record StudentDto(int Id, string FullName, int GroupId, bool HasFace, bool FaceUnreadable = false);
 public sealed record CreateGroupRequest(string Name);
 public sealed record SaveStudentRequest(string FullName, int GroupId);
 
@@ -59,3 +59,6 @@ public sealed record EnrollResultDto(bool Ok, string Message);
 
 public sealed record ImportResultDto(int Added, int Skipped, List<string> Errors);
 public sealed record ErrorDto(string Message);
+
+public sealed record BackupFileDto(string Name, DateTime CreatedAt, long Size, bool Automatic);
+public sealed record RestoreResultDto(bool Ok, string Message, int Students, int Marks, bool RestartRecommended);

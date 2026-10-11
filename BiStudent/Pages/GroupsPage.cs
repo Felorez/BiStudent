@@ -26,7 +26,9 @@ internal sealed class GroupsPage : Page
         var import = new ModernButton { Text = "Импорт CSV", Width = 140 };
         var addGroup = new ModernButton { Text = "+ Группа", Width = 130 };
         var addStudent = new ModernButton { Text = "+ Студент", Width = 140, Primary = true };
-        Actions.Controls.Add(import); Actions.Controls.Add(addGroup); Actions.Controls.Add(addStudent);
+        var backups = new ModernButton { Text = "Резервные копии", Width = 170 };
+        backups.Click += (_, _) => { using var dialog = new BackupDialog(Api); dialog.ShowDialog(FindForm()); };
+        Actions.Controls.Add(backups); Actions.Controls.Add(import); Actions.Controls.Add(addGroup); Actions.Controls.Add(addStudent);
         import.Click += async (_, _) => await ImportAsync();
         addGroup.Click += async (_, _) => await AddGroupAsync();
         addStudent.Click += async (_, _) => await AddStudentAsync();
@@ -56,7 +58,7 @@ internal sealed class GroupsPage : Page
         {
             var student = SelectedStudent();
             if (student is null) { e.Cancel = true; return; }
-            enrollItem.Text = student.HasFace ? "Обновить лицо" : "Зарегистрировать лицо";
+            enrollItem.Text = student.HasFace || student.FaceUnreadable ? "Обновить лицо" : "Зарегистрировать лицо";
             enrollItem.Enabled = recognitionAvailable;
         };
         enrollItem.Click += async (_, _) => { if (SelectedStudent() is { } student) await EnrollAsync(student); };
@@ -167,11 +169,11 @@ internal sealed class GroupsPage : Page
                 var student = students[i];
                 var percent = 0d;
                 var hasLessons = journal.Columns.Count > 0 && percentages.TryGetValue(student.Id, out percent);
-                var index = grid.Rows.Add(i + 1, student.FullName, student.HasFace ? "✓ зарегистрировано" : "нет",
+                var index = grid.Rows.Add(i + 1, student.FullName, student.HasFace ? "✓ зарегистрировано" : student.FaceUnreadable ? "⚠ переснять" : "нет",
                     hasLessons ? UiFormat.Percent(percent) : "—");
                 var row = grid.Rows[index];
                 row.Tag = student;
-                row.Cells[2].Style.ForeColor = student.HasFace ? Theme.Green : Theme.Muted;
+                row.Cells[2].Style.ForeColor = student.HasFace ? Theme.Green : student.FaceUnreadable ? Theme.Yellow : Theme.Muted;
                 row.Cells[3].Style.ForeColor = hasLessons ? UiFormat.PercentColor(percent) : Theme.Muted;
             }
             deleteGroup.Visible = students.Count == 0;
