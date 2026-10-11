@@ -1,9 +1,0 @@
-**/bin/
-**/obj/
-.git/
-.vs/
-.github/
-**/*.local.csv
-BiStudent.Server/App_Data/
-BiStudent/
-BiStudent.Tests/

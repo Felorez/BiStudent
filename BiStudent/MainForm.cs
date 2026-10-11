@@ -1,172 +1,326 @@
-using BiStudent.Contracts;
+using OpenCvSharp;
+using OpenCvSharp.Extensions;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace BiStudent;
 
-internal sealed class MainForm : DarkForm
+internal sealed class MainForm : Form
 {
-    private static readonly (string Key, string Text, string Icon)[] Pages =
-    [
-        ("today", "Сегодня", "◷"), ("camera", "Автоотметка", "◉"), ("schedule", "Расписание", "▦"),
-        ("journal", "Журнал", "☰"), ("groups", "Группы", "◍"), ("report", "Отчёт для руководства", "▲")
-    ];
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr handle, int attribute, ref int value, int size);
+    private readonly AttendanceStore store;
+    private readonly Panel content = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
+    private readonly ModernButton studentsNav = new() { Text = "Студенты", Width = 180, Height = 48 };
+    private readonly ModernButton cameraNav = new() { Text = "Камера", Width = 180, Height = 48 };
+    private readonly PictureBox preview = new() { Dock = DockStyle.Fill, BackColor = Theme.Sidebar, SizeMode = PictureBoxSizeMode.Zoom };
+    private readonly Label status = Label("Камера остановлена", 10, Theme.Muted);
+    private readonly Label lessonLabel = Label("Нет занятия", 12, Theme.Text, FontStyle.Bold);
+    private readonly DataGridView studentsTable = Grid();
+    private readonly DataGridView attendanceTable = Grid();
+    private readonly DataGridView scheduleTable = Grid();
+    private readonly System.Windows.Forms.Timer scheduleTimer = new() { Interval = 30000 };
+    private CancellationTokenSource? cameraCancellation;
+    private Task? cameraTask;
+    private volatile Lesson? activeLesson;
+    private int trainingRevision;
+    private int pendingFrame;
+    private bool cameraPage;
 
-    private readonly ApiClient api;
-    private readonly Panel host = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
-    private readonly Dictionary<string, ModernButton> nav = [];
-    private Page? current;
-    private Label? userName;
-    private Label? userAvatar;
-    private bool switching;
-    private bool closingAfterLeave;
-    private bool leaving;
-
-    public MainForm(ApiClient api)
+    public MainForm(AttendanceStore? store = null)
     {
-        this.api = api;
-        Text = "BiStudent · Кабинет преподавателя";
-        Size = new Size(1440, 900);
-        MinimumSize = new Size(1180, 720);
+        this.store = store ?? new AttendanceStore();
+        Text = "BiStudent · Панель преподавателя";
+        Size = new System.Drawing.Size(1320, 800);
+        MinimumSize = new System.Drawing.Size(1040, 680);
         StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Theme.Background;
+        Font = Theme.Font(10);
+        AutoScaleMode = AutoScaleMode.Dpi;
         BuildShell();
-        api.Unauthorized += OnUnauthorized;
-        Shown += async (_, _) => { if (AutoOpenFirstPage && current is null) await ShowPageAsync("today"); };
+        scheduleTimer.Tick += (_, _) => { if (cameraPage) RefreshLesson(); };
+        scheduleTimer.Start();
+        ShowStudents();
     }
 
-    public bool SignedOut { get; private set; }
-    public bool AutoOpenFirstPage { get; set; } = true;
-    public LessonDto? PendingCameraLesson { get; set; }
-    internal Page? CurrentPage => current;
-    internal string? LastPageError { get; private set; }
-    internal ApiClient Api => api;
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        var enabled = 1;
+        if (DwmSetWindowAttribute(Handle, 20, ref enabled, sizeof(int)) != 0)
+            DwmSetWindowAttribute(Handle, 19, ref enabled, sizeof(int));
+    }
+
+    private static Label Label(string text, float size, Color color, FontStyle style = FontStyle.Regular) => new()
+    { Text = text, Font = Theme.Font(size, style), ForeColor = color, BackColor = Color.Transparent, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+
+    private static DataGridView Grid()
+    {
+        var grid = new DataGridView
+        {
+            Dock = DockStyle.Fill, BackgroundColor = Theme.Surface, BorderStyle = BorderStyle.None,
+            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Theme.Line,
+            ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None, RowHeadersVisible = false,
+            EnableHeadersVisualStyles = false, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false, ReadOnly = true, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            ColumnHeadersHeight = 43, ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            Font = Theme.Font(10)
+        };
+        grid.RowTemplate.Height = 43;
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Theme.Surface, ForeColor = Theme.Muted, Font = Theme.Font(9, FontStyle.Bold), SelectionBackColor = Theme.Surface, SelectionForeColor = Theme.Muted, Padding = new Padding(8, 0, 0, 0) };
+        grid.DefaultCellStyle = new DataGridViewCellStyle { BackColor = Theme.Surface, ForeColor = Theme.Text, SelectionBackColor = Theme.SurfaceHover, SelectionForeColor = Theme.Text, Padding = new Padding(8, 0, 0, 0) };
+        grid.AlternatingRowsDefaultCellStyle = grid.DefaultCellStyle;
+        return grid;
+    }
 
     private void BuildShell()
     {
-        var sidebar = new TableLayoutPanel { Dock = DockStyle.Left, Width = 240, BackColor = Theme.Sidebar, RowCount = 3, Padding = new Padding(16, 22, 16, 16) };
-        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 216));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar, RowCount = 3, Padding = new Padding(18, 28, 18, 18) };
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-
-        var brand = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, BackColor = Theme.Sidebar, Margin = Padding.Empty };
-        brand.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48)); brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        var mark = new Label { Text = "✓", Size = new Size(38, 38), BackColor = Theme.Accent, ForeColor = Color.White, Font = Theme.Font(16, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0, 4, 0, 0) };
-        brand.Controls.Add(mark, 0, 0); brand.SetRowSpan(mark, 2);
-        brand.Controls.Add(Ui.Label("BiStudent", 15, Theme.Text, FontStyle.Bold), 1, 0);
-        brand.Controls.Add(Ui.Label("Посещаемость без переклички", 8.5f, Theme.Muted), 1, 1);
-        sidebar.Controls.Add(brand, 0, 0);
-
-        var menu = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Sidebar };
-        foreach (var (key, text, icon) in Pages)
-        {
-            var button = new ModernButton { Text = text, Icon = icon, Width = 206, Height = 44, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, key == "report" ? 14 : 0, 0, 6), Dashed = key == "report", BackColor = Theme.Sidebar };
-            button.Click += async (_, _) => await ShowPageAsync(key);
-            nav[key] = button;
-            menu.Controls.Add(button);
-        }
-        sidebar.Controls.Add(menu, 0, 1);
-
-        var user = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, BackColor = Theme.Sidebar, Margin = Padding.Empty };
-        user.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44)); user.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); user.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
-        user.RowStyles.Add(new RowStyle(SizeType.Percent, 55)); user.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
-        var name = api.Teacher?.FullName ?? "Преподаватель";
-        var avatar = new Label { Text = Initials(name), Size = new Size(36, 36), BackColor = Theme.SurfaceAlt, ForeColor = Theme.Text, Font = Theme.Font(10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0, 12, 0, 0) };
-        user.Controls.Add(avatar, 0, 0); user.SetRowSpan(avatar, 2);
-        userAvatar = avatar;
-        var nameLabel = Ui.Label(name, 9.5f, Theme.Text, FontStyle.Bold); nameLabel.AutoEllipsis = true; nameLabel.TextAlign = ContentAlignment.BottomLeft;
-        user.Controls.Add(nameLabel, 1, 0);
-        userName = nameLabel;
-        var roleLabel = Ui.Label("Преподаватель", 8.5f, Theme.Muted); roleLabel.TextAlign = ContentAlignment.TopLeft;
-        user.Controls.Add(roleLabel, 1, 1);
-        var exit = new ModernButton { Text = "↩", Width = 38, Height = 38, Font = Theme.Font(12, FontStyle.Bold), BackColor = Theme.Sidebar, Margin = new Padding(0, 12, 0, 0) };
-        exit.Click += (_, _) => { SignedOut = true; Close(); };
-        new ToolTip().SetToolTip(exit, "Выйти");
-        user.Controls.Add(exit, 2, 0); user.SetRowSpan(exit, 2);
-        sidebar.Controls.Add(user, 0, 2);
-
-        Controls.Add(host);
-        Controls.Add(sidebar);
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        sidebar.Controls.Add(Label("CLASSROOM", 17, Theme.Text, FontStyle.Bold), 0, 0);
+        var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Sidebar };
+        studentsNav.Margin = new Padding(0, 0, 0, 10);
+        cameraNav.Margin = Padding.Empty;
+        studentsNav.Click += async (_, _) => { await StopCameraAsync(); ShowStudents(); };
+        cameraNav.Click += (_, _) => ShowCamera();
+        nav.Controls.Add(studentsNav); nav.Controls.Add(cameraNav);
+        sidebar.Controls.Add(nav, 0, 1);
+        sidebar.Controls.Add(Label("Локальная система\nпосещаемости", 9, Theme.Muted), 0, 2);
+        layout.Controls.Add(sidebar, 0, 0);
+        layout.Controls.Add(content, 1, 0);
+        Controls.Add(layout);
     }
 
-    private static string Initials(string name) =>
-        string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(p => char.IsLetter(p[0])).Take(2).Select(p => char.ToUpperInvariant(p[0])));
-
-    private Page CreatePage(string key) => key switch
+    private TableLayoutPanel Page(string title, string subtitle)
     {
-        "today" => new TodayPage(api),
-        "schedule" => new SchedulePage(api),
-        "journal" => new JournalPage(api),
-        "groups" => new GroupsPage(api),
-        "camera" => new CameraPage(api),
-        "report" => new ReportPage(api),
-        _ => throw new ArgumentOutOfRangeException(nameof(key), key, null)
-    };
+        content.Controls.Clear();
+        var page = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(28), BackColor = Theme.Background };
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+        page.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var heading = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, BackColor = Theme.Background, Margin = Padding.Empty };
+        heading.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        heading.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        heading.Controls.Add(Label(title, 23, Theme.Text, FontStyle.Bold), 0, 0);
+        heading.Controls.Add(Label(subtitle, 9, Theme.Muted), 0, 1);
+        page.Controls.Add(heading, 0, 0);
+        content.Controls.Add(page);
+        return page;
+    }
 
-    internal async Task ShowPageAsync(string key)
+    private static FlowLayoutPanel Actions() => new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Theme.Background };
+
+    private void ShowStudents()
     {
-        if (switching || IsDisposed) return;
-        switching = true;
-        if (api.Teacher is { } teacher && userName is not null && userAvatar is not null) { userName.Text = teacher.FullName; userAvatar.Text = Initials(teacher.FullName); }
+        cameraPage = false;
+        studentsNav.Selected = true; studentsNav.Invalidate(); cameraNav.Selected = false; cameraNav.Invalidate();
+        var page = Page("Студенты", "Регистрация и список студентов");
+        var actions = Actions();
+        var add = new ModernButton { Text = "+ Добавить студента", Primary = true, Width = 192 };
+        add.Click += (_, _) => { using var form = new EnrollmentForm(store); if (form.ShowDialog(this) == DialogResult.OK) { trainingRevision++; RefreshStudents(); } };
+        var updateFace = new ModernButton { Text = "Обновить лицо", Width = 155 };
+        updateFace.Click += (_, _) =>
+        {
+            if (studentsTable.CurrentRow?.Cells["Id"].Value is not int id) return;
+            var student = store.Students().FirstOrDefault(s => s.Id == id);
+            if (student is null) return;
+            using var form = new EnrollmentForm(store, student);
+            if (form.ShowDialog(this) == DialogResult.OK) { trainingRevision++; RefreshStudents(); }
+        };
+        var delete = new ModernButton { Text = "Удалить", Width = 120 };
+        delete.Click += (_, _) =>
+        {
+            if (studentsTable.CurrentRow?.Cells["Id"].Value is not int id) return;
+            if (MessageBox.Show(this, "Удалить студента и его отметки?", "Подтверждение", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            store.DeleteStudent(id); trainingRevision++; RefreshStudents();
+        };
+        actions.Controls.Add(add); actions.Controls.Add(updateFace); actions.Controls.Add(delete); page.Controls.Add(actions, 0, 1);
+        var card = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; card.Controls.Add(studentsTable); page.Controls.Add(card, 0, 2);
+        RefreshStudents();
+    }
+
+    private void RefreshStudents()
+    {
+        studentsTable.DataSource = store.Students().Select(s => new { s.Id, Студент = s.Name, Группа = s.GroupName, Образцов = s.SampleCount }).ToList();
+        if (studentsTable.Columns["Id"] is { } column) column.Visible = false;
+    }
+
+    private void ShowCamera()
+    {
+        cameraPage = true;
+        studentsNav.Selected = false; studentsNav.Invalidate(); cameraNav.Selected = true; cameraNav.Invalidate();
+        var page = Page("Камера", "Видеопоток, текущий урок и посещаемость");
+        var actions = Actions();
+        var start = new ModernButton { Text = "▶ Запустить", Primary = true, Width = 145 };
+        start.Click += async (_, _) => await StartCameraAsync();
+        var stop = new ModernButton { Text = "Остановить", Width = 135 };
+        stop.Click += async (_, _) => await StopCameraAsync();
+        var addLesson = new ModernButton { Text = "+ Занятие", Width = 128 };
+        addLesson.Click += (_, _) => { using var form = new LessonForm(store); if (form.ShowDialog(this) == DialogResult.OK) RefreshSchedule(); };
+        var removeLesson = new ModernButton { Text = "Удалить занятие", Width = 160 };
+        removeLesson.Click += (_, _) =>
+        {
+            if (scheduleTable.CurrentRow?.Cells["Id"].Value is not int id) return;
+            if (MessageBox.Show(this, "Удалить занятие и его отметки?", "Подтверждение", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+            store.DeleteLesson(id); RefreshSchedule();
+        };
+        actions.Controls.Add(start); actions.Controls.Add(stop); actions.Controls.Add(addLesson); actions.Controls.Add(removeLesson);
+        page.Controls.Add(actions, 0, 1);
+
+        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Background };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 61)); body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 39));
+        var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Margin = new Padding(0, 0, 12, 0) };
+        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); left.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); left.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        left.Controls.Add(lessonLabel, 0, 0);
+        var videoCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; videoCard.Controls.Add(preview); left.Controls.Add(videoCard, 0, 1);
+        left.Controls.Add(status, 0, 2); body.Controls.Add(left, 0, 0);
+
+        var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, Margin = Padding.Empty };
+        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 39)); right.RowStyles.Add(new RowStyle(SizeType.Percent, 52)); right.RowStyles.Add(new RowStyle(SizeType.Absolute, 48)); right.RowStyles.Add(new RowStyle(SizeType.Absolute, 39)); right.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
+        right.Controls.Add(Label("Посещаемость", 13, Theme.Text, FontStyle.Bold), 0, 0);
+        var attendanceCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(4) }; attendanceCard.Controls.Add(attendanceTable); right.Controls.Add(attendanceCard, 0, 1);
+        var markActions = Actions();
+        var mark = new ModernButton { Text = "Отметить", Width = 128, Height = 37 };
+        var unmark = new ModernButton { Text = "Снять отметку", Width = 157, Height = 37 };
+        mark.Click += (_, _) => ChangeMark(true); unmark.Click += (_, _) => ChangeMark(false);
+        markActions.Controls.Add(mark); markActions.Controls.Add(unmark); right.Controls.Add(markActions, 0, 2);
+        right.Controls.Add(Label("Расписание", 13, Theme.Text, FontStyle.Bold), 0, 3);
+        var scheduleCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(4) }; scheduleCard.Controls.Add(scheduleTable); right.Controls.Add(scheduleCard, 0, 4);
+        body.Controls.Add(right, 1, 0); page.Controls.Add(body, 0, 2);
+        RefreshSchedule();
+    }
+
+    private void RefreshSchedule()
+    {
+        scheduleTable.DataSource = store.Lessons().Select(l => new { l.Id, День = l.Day switch { DayOfWeek.Monday => "Пн", DayOfWeek.Tuesday => "Вт", DayOfWeek.Wednesday => "Ср", DayOfWeek.Thursday => "Чт", DayOfWeek.Friday => "Пт", DayOfWeek.Saturday => "Сб", _ => "Вс" }, Предмет = l.Subject, Группа = l.GroupName, Время = $"{l.Start:hh\\:mm}–{l.End:hh\\:mm}" }).ToList();
+        if (scheduleTable.Columns["Id"] is { } column) column.Visible = false;
+        RefreshLesson();
+    }
+
+    private void RefreshLesson()
+    {
+        var now = DateTime.Now;
+        var current = store.Lessons().Where(l => l.Day == now.DayOfWeek && now.TimeOfDay >= l.Start && now.TimeOfDay < l.End).ToList();
+        activeLesson = current.Count == 1 ? current[0] : null;
+        lessonLabel.Text = current.Count > 1 ? "Несколько занятий одновременно — уточните расписание" : activeLesson is null ? "Нет текущего занятия по расписанию" : $"Сейчас: {activeLesson}";
+        RefreshAttendance();
+    }
+
+    private void RefreshAttendance()
+    {
+        if (activeLesson is null) { attendanceTable.DataSource = null; return; }
+        var rows = store.Attendance(activeLesson.Id, DateOnly.FromDateTime(DateTime.Today), activeLesson.GroupName);
+        attendanceTable.DataSource = rows.Select(r => new { r.StudentId, Студент = r.Name, Статус = r.SeenAt is null ? "Нет отметки" : "Присутствует", Время = r.SeenAt?.ToString("HH:mm") ?? "—" }).ToList();
+        if (attendanceTable.Columns["StudentId"] is { } column) column.Visible = false;
+        status.Text = $"Присутствуют {rows.Count(r => r.SeenAt is not null)} из {rows.Count} · Фото на экране может обмануть распознавание";
+    }
+
+    private void ChangeMark(bool present)
+    {
+        if (activeLesson is null || attendanceTable.CurrentRow?.Cells["StudentId"].Value is not int id) return;
+        var date = DateOnly.FromDateTime(DateTime.Today);
+        if (present) store.MarkPresent(activeLesson.Id, date, id, "Вручную"); else store.RemoveMark(activeLesson.Id, date, id);
+        RefreshAttendance();
+    }
+
+    private Task StartCameraAsync()
+    {
+        if (cameraTask is { IsCompleted: false }) return Task.CompletedTask;
+        cameraCancellation = new CancellationTokenSource();
+        cameraTask = Task.Run(() => CameraLoop(cameraCancellation.Token));
+        status.Text = "Подключение к камере…";
+        return Task.CompletedTask;
+    }
+
+    private async Task StopCameraAsync()
+    {
+        cameraCancellation?.Cancel();
+        if (cameraTask != null) { try { await cameraTask; } catch (OperationCanceledException) { } cameraTask = null; }
+        cameraCancellation?.Dispose(); cameraCancellation = null;
+        var old = preview.Image; preview.Image = null; old?.Dispose();
+        status.Text = "Камера остановлена";
+    }
+
+    private void CameraLoop(CancellationToken token)
+    {
         try
         {
-            if (current is not null)
+            using var capture = new VideoCapture(0);
+            if (!capture.IsOpened()) throw new InvalidOperationException("Веб-камера не найдена или занята другой программой.");
+            capture.FrameWidth = 960; capture.FrameHeight = 540;
+            using var engine = new FaceEngine();
+            engine.Train(store.Samples());
+            var revision = trainingRevision;
+            var streak = new Dictionary<int, int>();
+            int? lastLessonId = activeLesson?.Id;
+            var students = store.Students();
+            var names = students.ToDictionary(s => s.Id, s => s.Name);
+            using var frame = new Mat();
+            while (!token.IsCancellationRequested)
             {
-                await current.OnLeaveAsync();
-                host.Controls.Remove(current);
-                current.Dispose();
-                current = null;
+                if (!capture.Read(frame) || frame.Empty()) { Thread.Sleep(80); continue; }
+                if (revision != trainingRevision)
+                {
+                    engine.Train(store.Samples()); revision = trainingRevision; streak.Clear();
+                    students = store.Students(); names = students.ToDictionary(s => s.Id, s => s.Name);
+                }
+                if (lastLessonId != activeLesson?.Id) { streak.Clear(); lastLessonId = activeLesson?.Id; }
+                var matches = engine.Scan(frame);
+                var detectedIds = matches.Where(m => m.StudentId.HasValue).Select(m => m.StudentId!.Value).ToHashSet();
+                foreach (var id in streak.Keys.ToArray()) if (!detectedIds.Contains(id)) streak.Remove(id);
+                foreach (var match in matches)
+                {
+                    if (match.StudentId is not int id) continue;
+                    streak[id] = streak.GetValueOrDefault(id) + 1;
+                    var lesson = activeLesson;
+                    if (streak[id] >= 5 && lesson != null && students.Any(s => s.Id == id && s.GroupName == lesson.GroupName))
+                    {
+                        if (store.MarkPresent(lesson.Id, DateOnly.FromDateTime(DateTime.Today), id, "Камера")) SafeUi(RefreshAttendance);
+                        streak[id] = 0;
+                    }
+                }
+                if (Interlocked.Exchange(ref pendingFrame, 1) != 0) continue;
+                var bitmap = BitmapConverter.ToBitmap(frame);
+                using (var g = Graphics.FromImage(bitmap))
+                {
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    foreach (var match in matches)
+                    {
+                        var studentId = match.StudentId ?? -1;
+                        var known = names.TryGetValue(studentId, out var matchedName);
+                        var color = known ? Theme.Green : Theme.Red;
+                        using var pen = new Pen(color, 3);
+                        g.DrawRectangle(pen, match.Bounds.X, match.Bounds.Y, match.Bounds.Width, match.Bounds.Height);
+                        var name = known ? matchedName! : "Неизвестный";
+                        using var font = Theme.Font(13, FontStyle.Bold);
+                        using var brush = new SolidBrush(color);
+                        using var bg = new SolidBrush(Color.FromArgb(210, 11, 18, 32));
+                        var y = Math.Max(0, match.Bounds.Y - 32);
+                        g.FillRectangle(bg, match.Bounds.X, y, g.MeasureString(name, font).Width + 12, 30);
+                        g.DrawString(name, font, brush, match.Bounds.X + 5, y + 2);
+                    }
+                }
+                SafeUi(() => { var old = preview.Image; preview.Image = bitmap; old?.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); }, () => { bitmap.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); });
             }
-            foreach (var (pageKey, button) in nav) button.Selected = pageKey == key;
-            var page = CreatePage(key);
-            current = page;
-            host.Controls.Add(page);
-            LastPageError = null;
-            try { await page.LoadAsync(); }
-            catch (ApiException ex) { LastPageError = ex.Message; Ui.Toast(this, ex.Message, true); }
         }
-        finally { switching = false; }
+        catch (Exception ex) { SafeUi(() => status.Text = ex.Message); }
     }
 
-    internal Task OpenCamera(LessonDto lesson)
+    private void SafeUi(Action action, Action? failure = null)
     {
-        PendingCameraLesson = lesson;
-        return ShowPageAsync("camera");
+        try { if (IsHandleCreated && !IsDisposed) BeginInvoke(action); else failure?.Invoke(); }
+        catch { failure?.Invoke(); }
     }
 
-    internal Task OpenLessonAsync(LessonDto lesson)
+    protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        using var dialog = new LessonDialog(api, lesson);
-        dialog.ShowDialog(this);
-        return current?.LoadAsync() ?? Task.CompletedTask;
-    }
-
-    private void OnUnauthorized()
-    {
-        if (IsDisposed || SignedOut) return;
-        BeginInvoke(() =>
-        {
-            if (SignedOut) return;
-            SignedOut = true;
-            Ui.Toast(this, "Сессия истекла — войдите снова", true);
-            Close();
-        });
-    }
-
-    protected override async void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (!closingAfterLeave && current is not null)
-        {
-            e.Cancel = true;
-            if (leaving) return;
-            leaving = true;
-            try { await current.OnLeaveAsync(); }
-            finally
-            {
-                closingAfterLeave = true;
-                Close();
-            }
-            return;
-        }
-        api.Unauthorized -= OnUnauthorized;
+        cameraCancellation?.Cancel(); scheduleTimer.Stop();
         base.OnFormClosing(e);
     }
 }

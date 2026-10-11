@@ -5,6 +5,3 @@
 **/obj/
 dist/
 *.csproj.user
-*.user
-BiStudent.Server/seed/*.local.csv
-BiStudent.Server/App_Data/
