@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace BiStudent.Server.Services;
 
 public sealed class SeedService(AppDbContext db, IConfiguration configuration, IWebHostEnvironment environment,
-    IPasswordHasher<Teacher> hasher, ScheduleService schedule)
+    IPasswordHasher<Teacher> hasher, ScheduleService schedule, ILogger<SeedService> logger)
 {
     public async Task SeedAsync()
     {
@@ -25,7 +25,12 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
             Path.Combine(AppContext.BaseDirectory, "seed", "students.local.csv"),
             Path.Combine(environment.ContentRootPath, "seed", "students.demo.csv"),
             Path.Combine(AppContext.BaseDirectory, "seed", "students.demo.csv")
-        }.FirstOrDefault(File.Exists) ?? throw new FileNotFoundException("Не найден список студентов для демо.");
+        }.FirstOrDefault(File.Exists);
+        if (path is null)
+        {
+            logger.LogWarning("Список студентов для демо (seed/students.demo.csv) не найден: создан только преподаватель.");
+            return;
+        }
         foreach (var raw in await File.ReadAllLinesAsync(path))
         {
             var parts = raw.Split(';').Select(x => x.Trim()).ToArray();
