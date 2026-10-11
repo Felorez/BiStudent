@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Reflection;
 using BiStudent.Contracts;
 using OpenCvSharp;
 
@@ -18,14 +16,16 @@ internal sealed class EnrollmentDialog : DarkForm
     private readonly ModernButton take = new() { Text = "Снять", Primary = true, Width = 125 };
     private readonly ModernButton retake = new() { Text = "Переснять последний", Width = 190 };
     private readonly ModernButton save = new() { Text = "Сохранить образцы", Width = 200 };
-    private readonly List<byte[]> shots = [];
+    private readonly byte[]?[] shots = new byte[]?[3];
     private readonly object frameLock = new();
+    private readonly object engineLock = new();
+    private int? retakeSlot;
     private CancellationTokenSource? cameraCts;
     private Task? cameraTask;
     private Mat? lastFrame;
     private Bitmap? queuedBitmap;
-    private object? engine;
-    private MethodInfo? detect;
+    private FaceEngine? engine;
+    private SampleQuality? quality;
     private int faceCount;
     private int pendingFrame;
     private DateTime lastFrameAt;
@@ -57,6 +57,7 @@ internal sealed class EnrollmentDialog : DarkForm
             steps[i] = Ui.Label("", 10, Theme.Muted);
             layout.Controls.Add(steps[i], 0, i + 1);
         }
+        var tips = new ToolTip();
         var previews = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, BackColor = Color.Transparent };
         for (var i = 0; i < 3; i++)
         {
@@ -66,6 +67,9 @@ internal sealed class EnrollmentDialog : DarkForm
                 Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.SurfaceHover,
                 Margin = new Padding(0, 5, 8, 5)
             };
+            var index = i;
+            thumbs[i].Click += (_, _) => RetakeAt(index);
+            tips.SetToolTip(thumbs[i], "Нажмите, чтобы переснять этот снимок");
             previews.Controls.Add(thumbs[i], i, 0);
         }
         layout.Controls.Add(previews, 0, 4);
@@ -106,46 +110,8 @@ internal sealed class EnrollmentDialog : DarkForm
 
     private void CreateDetector()
     {
-        try
-        {
-            var type = typeof(EnrollResultDto).Assembly.GetType("BiStudent.FaceEngine");
-            if (type is null) return;
-            var models = Directory.EnumerateFiles(AppContext.BaseDirectory, "*.onnx", SearchOption.AllDirectories).ToArray();
-            var yunet = models.FirstOrDefault(p => p.Contains("yunet", StringComparison.OrdinalIgnoreCase) ||
-                                                   p.Contains("detection", StringComparison.OrdinalIgnoreCase));
-            var sface = models.FirstOrDefault(p => p.Contains("sface", StringComparison.OrdinalIgnoreCase) ||
-                                                   p.Contains("recognition", StringComparison.OrdinalIgnoreCase));
-            foreach (var constructor in type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                         .OrderBy(c => c.GetParameters().Length))
-            {
-                var parameters = constructor.GetParameters();
-                var arguments = new object?[parameters.Length];
-                var valid = true;
-                for (var i = 0; i < parameters.Length; i++)
-                {
-                    var parameter = parameters[i];
-                    if (parameter.ParameterType == typeof(string))
-                    {
-                        var recognition = parameter.Name?.Contains("recogn", StringComparison.OrdinalIgnoreCase) == true ||
-                                          parameter.Name?.Contains("sface", StringComparison.OrdinalIgnoreCase) == true || i > 0;
-                        arguments[i] = recognition ? sface : yunet;
-                        if (arguments[i] is null) valid = false;
-                    }
-                    else if (parameter.HasDefaultValue) arguments[i] = parameter.DefaultValue;
-                    else valid = false;
-                }
-                if (!valid) continue;
-                try { engine = constructor.Invoke(arguments); break; }
-                catch { }
-            }
-            if (engine is null) return;
-            detect = type.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .FirstOrDefault(m => m.Name == "Detect" && m.GetParameters() is { Length: > 0 } p &&
-                                     p[0].ParameterType.IsAssignableFrom(typeof(Mat)) &&
-                                     p.Skip(1).All(x => x.HasDefaultValue));
-            if (detect is null) { (engine as IDisposable)?.Dispose(); engine = null; }
-        }
-        catch { (engine as IDisposable)?.Dispose(); engine = null; detect = null; }
+        try { engine = new FaceEngine(); }
+        catch { engine = null; }
     }
 
     private async Task CameraLoopAsync(CancellationToken token)
@@ -199,7 +165,7 @@ internal sealed class EnrollmentDialog : DarkForm
                         {
                             noFrameSince = DateTime.UtcNow;
                             var faces = DetectFaces(frame);
-                            StoreFrame(frame, faces.Count);
+                            StoreFrame(frame, faces.Count, Assess(frame, faces.Count));
                             if (Interlocked.CompareExchange(ref pendingFrame, 1, 0) == 0)
                             {
                                 Bitmap? bitmap = null;
@@ -247,8 +213,11 @@ internal sealed class EnrollmentDialog : DarkForm
         {
             camera?.Dispose();
             ClearLatestFrame();
-            (engine as IDisposable)?.Dispose();
-            engine = null; detect = null;
+            lock (engineLock)
+            {
+                engine?.Dispose();
+                engine = null;
+            }
         }
     }
 
@@ -268,7 +237,7 @@ internal sealed class EnrollmentDialog : DarkForm
         });
     }
 
-    private void StoreFrame(Mat frame, int count)
+    private void StoreFrame(Mat frame, int count, SampleQuality? check)
     {
         lock (frameLock)
         {
@@ -276,6 +245,7 @@ internal sealed class EnrollmentDialog : DarkForm
             lastFrame = frame.Clone();
             lastFrameAt = DateTime.UtcNow;
             faceCount = count;
+            quality = check;
         }
     }
 
@@ -287,6 +257,7 @@ internal sealed class EnrollmentDialog : DarkForm
             lastFrame = null;
             lastFrameAt = default;
             faceCount = 0;
+            quality = null;
         }
     }
 
@@ -305,93 +276,91 @@ internal sealed class EnrollmentDialog : DarkForm
 
     private List<Rectangle> DetectFaces(Mat frame)
     {
-        var result = new List<Rectangle>();
-        if (engine is null || detect is null) return result;
-        try
+        lock (engineLock)
         {
-            var parameters = detect.GetParameters();
-            var arguments = new object?[parameters.Length];
-            arguments[0] = frame;
-            for (var i = 1; i < parameters.Length; i++) arguments[i] = parameters[i].DefaultValue;
-            if (detect.Invoke(engine, arguments) is IEnumerable faces)
+            if (engine is null) return [];
+            try { return engine.Detect(frame).Select(r => new Rectangle(r.X, r.Y, r.Width, r.Height)).ToList(); }
+            catch
             {
-                foreach (var face in faces)
-                {
-                    if (face is null) continue;
-                    result.Add(FaceBounds(face) ?? Rectangle.Empty);
-                }
+                engine.Dispose();
+                engine = null;
+                return [];
             }
         }
-        catch
-        {
-            (engine as IDisposable)?.Dispose();
-            engine = null;
-            detect = null;
-            result.Clear();
-        }
-        return result;
     }
 
-    private static Rectangle? FaceBounds(object face)
+    private SampleQuality? Assess(Mat frame, int faces)
     {
-        if (face is Rectangle rectangle) return rectangle;
-        if (face is Rect rect) return new Rectangle(rect.X, rect.Y, rect.Width, rect.Height);
-        var nested = Member(face, "Rect") ?? Member(face, "Bounds") ?? Member(face, "Box");
-        if (nested is not null && !ReferenceEquals(nested, face)) return FaceBounds(nested);
-        var x = Member(face, "X"); var y = Member(face, "Y");
-        var w = Member(face, "Width") ?? Member(face, "W");
-        var h = Member(face, "Height") ?? Member(face, "H");
-        return x is null || y is null || w is null || h is null ? null
-            : new Rectangle(Convert.ToInt32(x), Convert.ToInt32(y), Convert.ToInt32(w), Convert.ToInt32(h));
+        lock (engineLock)
+        {
+            if (engine is null) return null;
+            try { return engine.AssessFrame(frame); }
+            catch { return null; }
+        }
     }
 
-    private static object? Member(object value, string name) =>
-        value.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public)?.GetValue(value) ??
-        value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.Public)?.GetValue(value);
+    private int Filled => shots.Count(s => s is not null);
+    private int NextSlot => retakeSlot is int slot && shots[slot] is null ? slot : Array.IndexOf(shots, null);
 
     private void UpdateState()
     {
         bool fresh;
         int count;
+        SampleQuality? check;
         lock (frameLock)
         {
             fresh = lastFrame is not null && (DateTime.UtcNow - lastFrameAt).TotalMilliseconds < 500;
             count = faceCount;
+            check = quality;
         }
-        take.Enabled = !saving && !stopping && shots.Count < 3 && fresh && detectorReady && count == 1;
-        retake.Enabled = !saving && !stopping && shots.Count > 0;
-        save.Enabled = !saving && !stopping && shots.Count == 3;
+        var next = NextSlot;
+        take.Enabled = !saving && !stopping && next >= 0 && fresh && detectorReady && count == 1 && check is { Ok: true };
+        retake.Enabled = !saving && !stopping && Filled > 0;
+        save.Enabled = !saving && !stopping && Filled == 3;
         for (var i = 0; i < 3; i++)
         {
-            steps[i].Text = i < shots.Count ? $"✓  {i + 1}/3  {Prompts[i]}"
-                : $"{i + 1}/3  {Prompts[i]}";
-            steps[i].ForeColor = i < shots.Count ? Theme.Green : i == shots.Count ? Theme.AccentHover : Theme.Muted;
+            steps[i].Text = shots[i] is not null ? $"✓  {i + 1}/3  {Prompts[i]}" : $"{i + 1}/3  {Prompts[i]}";
+            steps[i].ForeColor = shots[i] is not null ? Theme.Green : i == next ? Theme.AccentHover : Theme.Muted;
+            thumbs[i].Cursor = shots[i] is not null && !saving ? Cursors.Hand : Cursors.Default;
         }
         if (saving) { hint.Text = "Сохранение образцов…"; return; }
         if (!detectorReady) { hint.Text = "Проверка лица недоступна: не удалось загрузить модель."; return; }
         if (!fresh) return;
-        hint.Text = shots.Count == 3 ? "Три снимка готовы. Сохраните образцы."
-            : count == 0 ? "Наведите камеру так, чтобы в кадре было ровно одно лицо."
-            : count > 1 ? "В кадре несколько лиц. Оставьте одного студента."
-            : $"Готово: {Prompts[shots.Count].ToLowerInvariant()}. Нажмите «Снять».";
+        hint.ForeColor = Theme.Muted;
+        if (next < 0) { hint.Text = "Три снимка готовы. Сохраните образцы или нажмите на снимок, чтобы переснять его."; return; }
+        if (check is { Ok: false, Problem: { } problem })
+        {
+            hint.ForeColor = Theme.Yellow;
+            hint.Text = $"{problem}.";
+            return;
+        }
+        if (count == 0) { hint.Text = "Наведите камеру так, чтобы в кадре было ровно одно лицо."; return; }
+        if (count > 1) { hint.Text = "В кадре несколько лиц. Оставьте одного студента."; return; }
+        if (check is null) { hint.ForeColor = Theme.Yellow; hint.Text = "Не удалось оценить кадр — немного измените положение головы."; return; }
+        hint.Text = $"Кадр хороший: {Prompts[next].ToLowerInvariant()}. Нажмите «Снять».";
     }
 
     private void TakeShot()
     {
         if (!take.Enabled) return;
+        var slot = NextSlot;
+        if (slot < 0) return;
         Mat frame;
         lock (frameLock)
         {
-            if (lastFrame is null || faceCount != 1 || (DateTime.UtcNow - lastFrameAt).TotalMilliseconds >= 500) return;
+            if (lastFrame is null || faceCount != 1 || quality is not { Ok: true } || (DateTime.UtcNow - lastFrameAt).TotalMilliseconds >= 500) return;
             frame = lastFrame.Clone();
         }
         using (frame)
         {
             Cv2.ImEncode(".jpg", frame, out var jpeg, new ImageEncodingParam(ImwriteFlags.JpegQuality, 92));
-            shots.Add(jpeg);
+            shots[slot] = jpeg;
+            if (retakeSlot == slot) retakeSlot = null;
             using var stream = new MemoryStream(jpeg);
             using var decoded = new Bitmap(stream);
-            thumbs[shots.Count - 1].Image = new Bitmap(decoded);
+            var old = thumbs[slot].Image;
+            thumbs[slot].Image = new Bitmap(decoded);
+            old?.Dispose();
         }
         banner.Visible = false;
         banner.Text = "";
@@ -400,18 +369,25 @@ internal sealed class EnrollmentDialog : DarkForm
 
     private void Retake()
     {
-        if (saving || shots.Count == 0) return;
-        shots.RemoveAt(shots.Count - 1);
-        var thumb = thumbs[shots.Count];
-        var image = thumb.Image;
-        thumb.Image = null;
+        var last = Array.FindLastIndex(shots, s => s is not null);
+        if (last >= 0) RetakeAt(last);
+    }
+
+    private void RetakeAt(int index)
+    {
+        if (saving || shots[index] is null) return;
+        shots[index] = null;
+        retakeSlot = index;
+        var image = thumbs[index].Image;
+        thumbs[index].Image = null;
         image?.Dispose();
         UpdateState();
     }
 
     private void ResetShots()
     {
-        shots.Clear();
+        Array.Clear(shots);
+        retakeSlot = null;
         foreach (var thumb in thumbs)
         {
             var image = thumb.Image;
@@ -423,19 +399,29 @@ internal sealed class EnrollmentDialog : DarkForm
 
     private async Task SaveAsync()
     {
-        if (saving || shots.Count != 3) return;
+        if (saving || Filled != 3) return;
         saving = true;
         take.Enabled = false; retake.Enabled = false; save.Enabled = false;
         UseWaitCursor = true;
         UpdateState();
         try
         {
-            var result = await api.EnrollAsync(student.Id, shots.ToList());
+            var images = shots.Select(s => s!).ToList();
+            var result = await api.EnrollAsync(student.Id, images);
             if (IsDisposed) return;
-            if (result.Ok) { DialogResult = DialogResult.OK; Close(); }
-            else { ResetShots(); ShowError(result.Message); }
+            if (!result.Ok && result.SimilarTo is not null &&
+                Ui.Confirm(this, "Похожее лицо", result.Message, "Сохранить всё равно"))
+                result = await api.EnrollAsync(student.Id, images, allowSimilar: true);
+            if (IsDisposed) return;
+            if (result.Ok) { DialogResult = DialogResult.OK; Close(); return; }
+            if (result.Problems is { Count: > 0 } problems)
+            {
+                ShowError($"{result.Message} — подробности в окне со списком.");
+                Ui.Message(this, "Какие снимки переснять", string.Join(Environment.NewLine, problems));
+            }
+            else if (result.SimilarTo is null) { ResetShots(); ShowError(result.Message); }
         }
-        catch (ApiException ex) { if (!IsDisposed) { ResetShots(); ShowError(ex.Message); } }
+        catch (ApiException ex) { if (!IsDisposed) ShowError(ex.Message); }
         finally
         {
             saving = false;

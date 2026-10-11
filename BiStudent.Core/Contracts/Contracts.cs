@@ -48,14 +48,15 @@ public sealed record ReportDto(
     int SecondsPerManualMark, int MinutesPerManualReport);
 
 public sealed record AutomationSettingsDto(int SecondsPerManualMark, int MinutesPerManualReport, int LateAfterMinutes, int FramesInRow);
+public sealed record RecognitionSettingsDto(double MatchThreshold, double MinimumMargin, int FramesInRow);
 
 public sealed record RecognizeRequest(int SlotId, DateOnly Date, byte[] Image);
 public sealed record RecognizedFaceDto(int X, int Y, int W, int H, int? StudentId, string? Name, double Similarity,
-    bool Marked, bool AlreadyMarked, bool OtherGroup);
+    bool Marked, bool AlreadyMarked, bool OtherGroup, string? CandidateName = null, double Margin = 0);
 public sealed record RecognitionResultDto(List<RecognizedFaceDto> Faces, int FrameWidth, int FrameHeight, string? Error = null);
 
-public sealed record EnrollRequest(List<byte[]> Images);
-public sealed record EnrollResultDto(bool Ok, string Message);
+public sealed record EnrollRequest(List<byte[]> Images, bool AllowSimilar = false);
+public sealed record EnrollResultDto(bool Ok, string Message, string? SimilarTo = null, double SimilarScore = 0, List<string>? Problems = null);
 
 public sealed record ImportResultDto(int Added, int Skipped, List<string> Errors);
 public sealed record ErrorDto(string Message);

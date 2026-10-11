@@ -23,7 +23,10 @@ public static class ApiEndpoints
             var teacher = await db.Teachers.AsNoTracking().SingleAsync(x => x.Id == TeacherId(user));
             return new TeacherDto(teacher.Id, teacher.FullName, teacher.Login);
         });
-        api.MapGet("/settings/automation", (IConfiguration configuration) => Automation(configuration));
+        api.MapGet("/settings/automation", async (IConfiguration configuration, RecognitionService recognition) =>
+            Automation(configuration, (await recognition.GetSettingsAsync()).FramesInRow));
+        api.MapGet("/settings/recognition", (RecognitionService recognition) => recognition.GetSettingsAsync());
+        api.MapPut("/settings/recognition", (RecognitionSettingsDto settings, RecognitionService recognition) => recognition.SaveSettingsAsync(settings));
 
         api.MapGet("/dashboard", async (ClaimsPrincipal user, StatsService stats, ScheduleService schedule) =>
             await DashboardAsync(TeacherId(user), stats, schedule, DateTime.Now));
@@ -114,7 +117,7 @@ public static class ApiEndpoints
             return new ImportResultDto(added, skipped, []);
         });
         students.MapPost("/{id:int}/enroll", async (int id, EnrollRequest request, RecognitionService recognition) =>
-            await recognition.EnrollAsync(id, request.Images)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
+            await recognition.EnrollAsync(id, request.Images, request.AllowSimilar)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
 
         var lessons = api.MapGroup("/lessons/{slotId:int}/{date}");
         lessons.MapGet("/attendance", async (int slotId, DateOnly date, ClaimsPrincipal user, AppDbContext db, AttendanceService attendance) =>
@@ -258,9 +261,9 @@ public static class ApiEndpoints
             automation.SecondsPerManualMark, automation.MinutesPerManualReport);
     }
 
-    private static AutomationSettingsDto Automation(IConfiguration configuration) => new(
+    private static AutomationSettingsDto Automation(IConfiguration configuration, int? framesInRow = null) => new(
         configuration.GetValue("Automation:SecondsPerManualMark", 6), configuration.GetValue("Automation:MinutesPerManualReport", 20),
-        configuration.GetValue("Attendance:LateAfterMinutes", 10), configuration.GetValue("Recognition:FramesInRow", 3));
+        configuration.GetValue("Attendance:LateAfterMinutes", 10), framesInRow ?? configuration.GetValue("Recognition:FramesInRow", 3));
 
     private static SlotDto Map(ScheduleSlot slot, string groupName) => new(
         slot.Id, slot.GroupId, groupName, slot.Subject, slot.Room, slot.DayOfWeek, slot.Start, slot.End,
