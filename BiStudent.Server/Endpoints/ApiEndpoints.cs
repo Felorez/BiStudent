@@ -81,10 +81,12 @@ public static class ApiEndpoints
             await students.DeleteGroupAsync(id);
             return Results.NoContent();
         });
-        groups.MapGet("/{id:int}/students", async (int id, StudentService students) =>
+        groups.MapGet("/{id:int}/students", async (int id, StudentService students, FaceSampleHealth health) =>
         {
             var faces = await students.WithFaceAsync(id);
-            return (await students.ForGroupAsync(id)).Select(s => new StudentDto(s.Id, s.FullName, s.GroupId, faces.Contains(s.Id))).ToList();
+            var unreadable = await health.UnreadableStudentsAsync();
+            return (await students.ForGroupAsync(id))
+                .Select(s => new StudentDto(s.Id, s.FullName, s.GroupId, faces.Contains(s.Id) && !unreadable.Contains(s.Id), unreadable.Contains(s.Id))).ToList();
         });
 
         var students = api.MapGroup("/students");
@@ -149,8 +151,23 @@ public static class ApiEndpoints
             await EnsureSlotAsync(db, user, request.SlotId);
             return await recognition.RecognizeAsync(TeacherId(user), request.SlotId, request.Date, request.Image);
         }).WithMetadata(new RequestSizeLimitAttribute(4 * 1024 * 1024));
-        api.MapGet("/recognition/status", (RecognitionService recognition) =>
-            new EnrollResultDto(recognition.IsAvailable, recognition.Error ?? "Распознавание готово."));
+        api.MapGet("/recognition/status", async (RecognitionService recognition, FaceSampleHealth health) =>
+        {
+            if (!recognition.IsAvailable) return new EnrollResultDto(false, recognition.Error ?? "Распознавание недоступно.");
+            var unreadable = (await health.UnreadableStudentsAsync()).Count;
+            return new EnrollResultDto(true, unreadable == 0 ? "Распознавание готово."
+                : $"Образцы лиц {unreadable} студентов не расшифровываются (база перенесена без ключей шифрования). Зарегистрируйте их лица заново — история посещаемости сохранена.");
+        });
+
+        var admin = api.MapGroup("/admin").RequireAuthorization("BackupAdmin");
+        admin.MapGet("/backups", (BackupService backups) => backups.List());
+        admin.MapPost("/backups", async (BackupService backups, CancellationToken ct) => await backups.CreateAsync(automatic: false, ct));
+        admin.MapGet("/backups/{name}", (string name, BackupService backups) =>
+            backups.Resolve(name) is { } path
+                ? Results.File(path, "application/zip", Path.GetFileName(path))
+                : Results.Json(new ErrorDto("Копия не найдена."), statusCode: StatusCodes.Status404NotFound));
+        admin.MapPost("/restore", async (HttpRequest request, ClaimsPrincipal user, BackupService backups, SessionGeneration sessions, CancellationToken ct) =>
+            await backups.RestoreAsync(request.Body, ct, () => sessions.IsCurrent(user))).WithMetadata(new RequestSizeLimitAttribute(200L * 1024 * 1024));
 
         var journal = api.MapGroup("/journal");
         journal.MapGet("/{groupId:int}", async (int groupId, DateOnly from, DateOnly to, string? subject, ClaimsPrincipal user, AttendanceService attendance) =>
@@ -168,14 +185,16 @@ public static class ApiEndpoints
         });
     }
 
-    private static async Task<IResult> LoginAsync(LoginRequest request, AppDbContext db, IPasswordHasher<Teacher> hasher)
+    private static async Task<IResult> LoginAsync(LoginRequest request, AppDbContext db, IPasswordHasher<Teacher> hasher, SessionGeneration sessions)
     {
         var teacher = await db.Teachers.SingleOrDefaultAsync(x => x.Login == request.Login.Trim());
         if (teacher is null || hasher.VerifyHashedPassword(teacher, teacher.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
             return Results.Json(new ErrorDto("Неверный логин или пароль."), statusCode: StatusCodes.Status401Unauthorized);
         var identity = new ClaimsIdentity([
             new Claim(ClaimTypes.NameIdentifier, teacher.Id.ToString(CultureInfo.InvariantCulture)),
-            new Claim(ClaimTypes.Name, teacher.FullName)
+            new Claim(ClaimTypes.Name, teacher.FullName),
+            new Claim("bistudent:login", teacher.Login),
+            sessions.Claim()
         ], BearerTokenDefaults.AuthenticationScheme);
         return Results.SignIn(new ClaimsPrincipal(identity), authenticationScheme: BearerTokenDefaults.AuthenticationScheme);
     }

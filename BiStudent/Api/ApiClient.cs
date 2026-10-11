@@ -63,6 +63,20 @@ internal sealed class ApiClient : IDisposable
 
     public Task<AutomationSettingsDto> AutomationAsync() => GetAsync<AutomationSettingsDto>("api/settings/automation");
     public Task<EnrollResultDto> RecognitionStatusAsync() => GetAsync<EnrollResultDto>("api/recognition/status");
+    public Task<List<BackupFileDto>> BackupsAsync() => GetAsync<List<BackupFileDto>>("api/admin/backups");
+    public Task<BackupFileDto> CreateBackupAsync() =>
+        RequestAsync<BackupFileDto>(HttpMethod.Post, "api/admin/backups", timeout: LongTimeout);
+    public Task<RestoreResultDto> RestoreAsync(byte[] zip) =>
+        RequestAsync<RestoreResultDto>(HttpMethod.Post, "api/admin/restore", new ByteArrayContent(zip) { Headers = { ContentType = new MediaTypeHeaderValue("application/zip") } }, timeout: TimeSpan.FromMinutes(5));
+
+    public async Task<(byte[] Content, string FileName)> DownloadBackupAsync(string name)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        using var response = await SendWithDeadlineAsync(HttpMethod.Get, $"api/admin/backups/{Uri.EscapeDataString(name)}", null, deadline.Token, CancellationToken.None);
+        try { return (await response.Content.ReadAsByteArrayAsync(deadline.Token), name); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw NetworkError(ex); }
+        catch (OperationCanceledException ex) { throw TimeoutError(ex); }
+    }
     public Task<DashboardDto> DashboardAsync(CancellationToken cancellationToken = default) =>
         RequestAsync<DashboardDto>(HttpMethod.Get, "api/dashboard", cancellationToken: cancellationToken);
     public Task<ReportDto> ReportAsync() => GetAsync<ReportDto>("api/report");
