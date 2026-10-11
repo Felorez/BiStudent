@@ -33,6 +33,8 @@
 
 Вход в клиент: сервер `http://localhost:5080`, логин `teacher`, пароль `teacher123`.
 
+Модель распознавания SFace (38 МБ) не хранится в репозитории: при первой сборке её скачивает `BiStudent.Core.csproj` из OpenCV Zoo (запасной адрес — Hugging Face) и проверяет по SHA-256. Без интернета положите файл `face_recognition_sface_2021dec.onnx` в `BiStudent.Core/Models` вручную. Детектор YuNet (0,2 МБ) лежит в репозитории.
+
 Запуск вручную:
 
 ```powershell
