@@ -61,10 +61,12 @@ internal sealed class ModernButton : Control
         var color = Mix(baseColor, hoverColor, hoverProgress);
         if (pressed) color = ControlPaint.Dark(color, .12f);
         using var path = Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+        if (!Enabled) color = Theme.Surface;
         using var brush = new SolidBrush(color);
         e.Graphics.FillPath(brush, path);
-        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Theme.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
 
     private static Color Mix(Color a, Color b, float amount) => Color.FromArgb((int)(a.R + (b.R - a.R) * amount), (int)(a.G + (b.G - a.G) * amount), (int)(a.B + (b.B - a.B) * amount));
     protected override void Dispose(bool disposing) { if (disposing) animation.Dispose(); base.Dispose(disposing); }

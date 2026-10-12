@@ -14,6 +14,86 @@ namespace BiStudent
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length == 2 && args[0] == "--publish-stats")
+            {
+                try
+                {
+                    using var cloud = CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult();
+                    var snapshot = cloud.LoadAsync().GetAwaiter().GetResult();
+                    new PublicStatsPublisher(cloud, new AttendanceStore()).PublishAsync(snapshot, true).GetAwaiter().GetResult();
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "publish-result.txt"), $"OK: public snapshot published; students={snapshot.Students.Count}; grades={snapshot.Grades.Count(x => x.Score is not null)}"); return 0;
+                }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "publish-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--rename-teacher")
+            {
+                try
+                {
+                    using var cloud = CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult();
+                    var count = cloud.RenameTeacherAsync().GetAwaiter().GetResult();
+                    var settings = FirebaseSettings.Load();
+                    var local = new AttendanceStore().RenameTeacher(settings.TeacherUid, settings.TeacherName);
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "rename-result.txt"), $"OK: Firebase profile updated; cloud records={count}; local records={local}; name={settings.TeacherName}"); return 0;
+                }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "rename-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--cache-cloud-check")
+            {
+                try { CloudDiagnostics.CheckCacheCloudAsync(args[1]).GetAwaiter().GetResult(); return 0; }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "cloud-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--journal-check")
+            {
+                try { CloudDiagnostics.CheckJournalAsync(args[1]).GetAwaiter().GetResult(); return 0; }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "cloud-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--cloud-check")
+            {
+                try { CloudDiagnostics.CheckAsync(args[1]).GetAwaiter().GetResult(); return 0; }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "cloud-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--cloud-preview")
+            {
+                try
+                {
+                    using var cloud = CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult();
+                    var snapshot = cloud.LoadAsync().GetAwaiter().GetResult();
+                    Application.EnableVisualStyles();
+                    var workspace = new CloudWorkspace(() => Task.FromResult(snapshot), cloud.SaveChangesAsync, Path.Combine(AppContext.BaseDirectory, "diagnostics", "preview-draft.json"));
+                    workspace.LoadAsync().GetAwaiter().GetResult();
+                    using var form = new CloudGradesForm(workspace, snapshot.Students[0].Id, snapshot.Students[0].Name, snapshot.Subjects);
+                    form.Show();
+                    var deadline = DateTime.UtcNow.AddSeconds(30);
+                    while (DateTime.UtcNow < deadline && !form.Controls.OfType<TableLayoutPanel>().SelectMany(x => x.Controls.OfType<Label>()).Any(x => x.Text.StartsWith("Оценок по предмету"))) { Application.DoEvents(); Thread.Sleep(20); }
+                    using var bitmap = new System.Drawing.Bitmap(form.Width, form.Height);
+                    form.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height));
+                    bitmap.Save(Path.Combine(AppContext.BaseDirectory, "diagnostics", "cloud-grades.png")); form.Close();
+                    var requests = cloud.RequestsSent;
+                    using var main = new MainForm(new AttendanceStore(Path.Combine(AppContext.BaseDirectory, "diagnostics", "preview-store")), new TeacherSession("preview", "maral@gmail.com", "Мадина Апай"), cloud, workspace);
+                    main.Show(); Application.DoEvents();
+                    using var mainImage = new System.Drawing.Bitmap(main.Width, main.Height);
+                    main.DrawToBitmap(mainImage, new System.Drawing.Rectangle(0, 0, mainImage.Width, mainImage.Height)); mainImage.Save(Path.Combine(AppContext.BaseDirectory, "diagnostics", "cloud-main.png")); main.Close();
+                    if (cloud.RequestsSent != requests) throw new InvalidOperationException("Открытие главного окна делает запросы.");
+                    return 0;
+                }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "cloud-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Length == 3 && args[0] == "--cloud-seed")
+            {
+                try { CloudDiagnostics.SeedAsync(args[1], args[2]).GetAwaiter().GetResult(); return 0; }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "cloud-error.txt"), ex.ToString()); return 1; }
+            }
+            if (args.Contains("--import-starter-data"))
+            {
+                try
+                {
+                    var store = new AttendanceStore();
+                    var directory = Path.Combine(AppContext.BaseDirectory, "diagnostics"); Directory.CreateDirectory(directory);
+                    File.WriteAllText(Path.Combine(directory, "import-result.txt"), $"Students={store.Students().Count}; Lessons={store.Lessons().Count}");
+                    return 0;
+                }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "import-error.txt"), ex.ToString()); return 1; }
+            }
             if (args.Contains("--self-test"))
             {
                 try
@@ -79,8 +159,25 @@ namespace BiStudent
                     migrated.ReplaceSamples(1, [sampleBytes]);
                     if (migrated.Students().Single().SampleCount != 1 || migrated.Attendance(migrationLesson.Id, DateOnly.FromDateTime(DateTime.Today), "Т-2").Single().SeenAt is null)
                         throw new InvalidOperationException("Обновление лица изменило историю посещаемости.");
+                    FeatureChecks.Run(directory);
                     Application.EnableVisualStyles();
-                    using (var form = new MainForm(store))
+                    var teacher = new TeacherSession("self-test", "maral@gmail.com", "Мадина Апай");
+                    using (var login = new LoginForm())
+                    {
+                        login.Show(); Application.DoEvents();
+                        using var image = new System.Drawing.Bitmap(login.Width, login.Height);
+                        login.DrawToBitmap(image, new System.Drawing.Rectangle(0, 0, image.Width, image.Height));
+                        image.Save(Path.Combine(directory, "login-screen.png")); login.Close();
+                    }
+                    dataTest.SaveGrade(null, testStudent, "Математика", DateOnly.FromDateTime(DateTime.Today), 90, "Контрольная работа", teacher);
+                    using (var grades = new GradesForm(dataTest, dataTest.Students().Single(s => s.Id == testStudent), teacher))
+                    {
+                        grades.Show(); Application.DoEvents();
+                        using var image = new System.Drawing.Bitmap(grades.Width, grades.Height);
+                        grades.DrawToBitmap(image, new System.Drawing.Rectangle(0, 0, image.Width, image.Height));
+                        image.Save(Path.Combine(directory, "grades-screen.png")); grades.Close();
+                    }
+                    using (var form = new MainForm(store, teacher))
                     {
                         form.Show();
                         Application.DoEvents();
@@ -105,7 +202,19 @@ namespace BiStudent
             }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            while (true)
+            {
+                using var login = new LoginForm();
+                if (login.ShowDialog() != DialogResult.OK || login.Session is null) return 0;
+                var settings = FirebaseSettings.Load();
+                new AttendanceStore().RenameTeacher(settings.TeacherUid, settings.TeacherName);
+                using var cloud = settings.UseCloudData ? new CloudFirestore(settings, login.Session) : null;
+                var workspace = cloud is null ? null : new CloudWorkspace(cloud, login.Session.Uid);
+                if (workspace is not null) { using var loading = new LoadingForm(workspace); if (loading.ShowDialog() != DialogResult.OK) return 0; }
+                using var main = new MainForm(teacher: login.Session, cloud: cloud, workspace: workspace);
+                Application.Run(main);
+                if (!main.SignedOut) break;
+            }
             return 0;
         }
     }

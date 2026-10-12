@@ -15,6 +15,8 @@
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
   </ItemGroup>
   <ItemGroup>
+    <None Update="firebase.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="starter-data.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="Models\*.onnx" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Models\LICENSE-YUNET.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Models\LICENSE-SFACE.txt" CopyToOutputDirectory="PreserveNewest" />

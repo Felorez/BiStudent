@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function teacher() {
+      return request.auth != null && request.auth.uid == '2iZhLx4u44deMw6jHOLVXgIVRcK2';
+    }
+    match /publicStats/23-po-103-4r-2 {
+      allow get: if true;
+      allow create, update: if teacher();
+    }
+    match /groups/23-po-103-4r-2 {
+      allow read, create, update: if teacher();
+      match /students/{studentId} {
+        allow read, create, update: if teacher();
+      }
+      match /grades/{gradeId} {
+        allow read: if teacher();
+        allow create, update: if teacher()
+          && request.resource.data.studentId is string
+          && request.resource.data.subjectId in ['high-level', 'csharp', 'opencv', 'databases', 'devops', 'economics']
+          && (request.resource.data.score == null ||
+            (request.resource.data.score is int && request.resource.data.score >= 0 && request.resource.data.score <= 100));
+      }
+    }
+  }
+}
