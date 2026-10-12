@@ -17,9 +17,13 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer autoSaveTimer = new();
     private readonly ModernButton saveChanges = new() { Text = "Сохранить изменения", Width = 210, Enabled = false };
     private bool savingBeforeClose;
+    private bool closingWork;
+    private string? attendanceError;
     private readonly PublicStatsPublisher? statsPublisher;
     private bool statsDirty = true;
     private bool publishingStats;
+    private AttendanceSync? attendanceSync;
+    private readonly CameraLoader cameraLoader = new() { Visible = false };
     private CloudSnapshot? cloudSnapshot;
     private Label? pageSubtitle;
     private bool cloudLoading;
@@ -50,6 +54,7 @@ internal sealed class MainForm : Form
         this.workspace = workspace ?? (cloud is null ? null : new CloudWorkspace(cloud, teacher?.Uid ?? "test"));
         cloudSnapshot = this.workspace?.Snapshot;
         if (cloudSnapshot is not null) this.store.ApplyCloudRoster(cloudSnapshot, FirebaseSettings.Load().GroupId);
+        if (cloud is not null && cloudSnapshot is not null) attendanceSync = new AttendanceSync(this.store, cloud, cloudSnapshot);
         Text = "BiStudent · Панель преподавателя";
         Size = new System.Drawing.Size(1320, 800);
         MinimumSize = new System.Drawing.Size(1040, 680);
@@ -234,6 +239,7 @@ internal sealed class MainForm : Form
             var snapshot = workspace.Snapshot!;
             if (IsDisposed) return;
             store.ApplyCloudRoster(snapshot, FirebaseSettings.Load().GroupId);
+            attendanceSync = new AttendanceSync(store, cloud!, snapshot);
             cloudSnapshot = snapshot; trainingRevision++;
             if (!cameraPage) ShowStudents(); else RefreshSchedule();
         }
@@ -246,21 +252,30 @@ internal sealed class MainForm : Form
         if (IsDisposed || workspace is null) return;
         cloudSnapshot = workspace.Snapshot;
         if (workspace.HasChanges) statsDirty = true;
-        saveChanges.Enabled = workspace.HasChanges && !workspace.IsSaving;
+        saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true) && !workspace.IsSaving && !publishingStats;
         if (!cameraPage) RefreshStudents();
-        if (pageSubtitle is not null) { pageSubtitle.ForeColor = workspace.Error is null ? Theme.Muted : Theme.Red; pageSubtitle.Text = workspace.Error ?? (workspace.IsSaving ? "Сохранение изменений в Firebase…" : workspace.HasChanges ? $"Несохранённых изменений: {workspace.PendingCount} · Автосохранение каждые {savePreferences.Seconds} сек." : (cloudSnapshot?.GroupName ?? "") + " · Все изменения сохранены"); }
+        if (pageSubtitle is not null) { pageSubtitle.ForeColor = workspace.Error is null && attendanceError is null ? Theme.Muted : Theme.Red; pageSubtitle.Text = workspace.Error ?? attendanceError ?? (workspace.IsSaving ? "Сохранение изменений в Firebase…" : workspace.HasChanges || attendanceSync?.HasChanges == true ? $"Есть несохранённые изменения · Автосохранение каждые {savePreferences.Seconds} сек." : (cloudSnapshot?.GroupName ?? "") + " · Все изменения сохранены"); }
     }
 
     private async Task SaveAndPublishAsync()
     {
         if (workspace is null || publishingStats) return;
-        await workspace.SaveAsync();
-        if (workspace.IsSaving || workspace.HasChanges || workspace.Snapshot is null || !statsDirty || statsPublisher is null) return;
+        if (!workspace.HasChanges && attendanceSync?.HasChanges != true && !statsDirty) return;
         publishingStats = true;
+        attendanceError = null;
+        try {
+        await workspace.SaveAsync();
+        if (attendanceSync is not null) await attendanceSync.SaveAsync();
+        if (workspace.IsSaving || workspace.HasChanges || workspace.Snapshot is null || !statsDirty || statsPublisher is null) return;
         statsDirty = false;
-        try { await statsPublisher.PublishAsync(workspace.Snapshot); }
-        catch { statsDirty = true; if (pageSubtitle is not null) { pageSubtitle.ForeColor = Theme.Red; pageSubtitle.Text = "Оценки сохранены. Не удалось обновить сайт; публикация повторится автоматически."; } }
-        finally { publishingStats = false; }
+        await statsPublisher.PublishAsync(workspace.Snapshot);
+        }
+        catch { statsDirty = true; attendanceError = "Не удалось сохранить посещаемость или обновить сайт. Повторим автоматически; данные остаются на компьютере."; }
+        finally {
+            publishingStats = false;
+            saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true) && !workspace.IsSaving;
+            if (pageSubtitle is not null && attendanceError is not null) { pageSubtitle.ForeColor = Theme.Red; pageSubtitle.Text = attendanceError; }
+        }
     }
 
     private void ShowCamera()
@@ -274,13 +289,13 @@ internal sealed class MainForm : Form
         var stop = new ModernButton { Text = "Остановить", Width = 135 };
         stop.Click += async (_, _) => await StopCameraAsync();
         var addLesson = new ModernButton { Text = "+ Занятие", Width = 128 };
-        addLesson.Click += (_, _) => { using var form = new LessonForm(store); if (form.ShowDialog(this) == DialogResult.OK) RefreshSchedule(); };
+        addLesson.Click += (_, _) => { using var form = new LessonForm(store, cloudSnapshot); if (form.ShowDialog(this) == DialogResult.OK) RefreshSchedule(); };
         var removeLesson = new ModernButton { Text = "Удалить занятие", Width = 160 };
         removeLesson.Click += (_, _) =>
         {
             if (scheduleTable.CurrentRow?.Cells["Id"].Value is not int id) return;
             if (MessageBox.Show(this, "Удалить занятие и его отметки?", "Подтверждение", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
-            store.DeleteLesson(id); RefreshSchedule();
+            store.DeleteLesson(id); statsDirty = true; WorkspaceChanged(); RefreshSchedule();
         };
         actions.Controls.Add(start); actions.Controls.Add(stop); actions.Controls.Add(addLesson); actions.Controls.Add(removeLesson);
         page.Controls.Add(actions, 0, 1);
@@ -290,7 +305,7 @@ internal sealed class MainForm : Form
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Margin = new Padding(0, 0, 12, 0) };
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); left.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); left.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
         left.Controls.Add(lessonLabel, 0, 0);
-        var videoCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; videoCard.Controls.Add(preview); left.Controls.Add(videoCard, 0, 1);
+        var videoCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; videoCard.Controls.Add(preview); preview.Controls.Add(cameraLoader); cameraLoader.BringToFront(); left.Controls.Add(videoCard, 0, 1);
         left.Controls.Add(status, 0, 2); body.Controls.Add(left, 0, 0);
 
         var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, Margin = Padding.Empty };
@@ -339,6 +354,7 @@ internal sealed class MainForm : Form
         var date = DateOnly.FromDateTime(DateTime.Today);
         if (present) store.MarkPresent(activeLesson.Id, date, id, "Вручную"); else store.RemoveMark(activeLesson.Id, date, id);
         statsDirty = true;
+        WorkspaceChanged();
         RefreshAttendance();
     }
 
@@ -348,6 +364,7 @@ internal sealed class MainForm : Form
         cameraCancellation = new CancellationTokenSource();
         cameraTask = Task.Run(() => CameraLoop(cameraCancellation.Token));
         status.Text = "Подключение к камере…";
+        cameraLoader.Text = "Подключение камеры…"; cameraLoader.Visible = true; cameraLoader.BringToFront();
         return Task.CompletedTask;
     }
 
@@ -358,18 +375,39 @@ internal sealed class MainForm : Form
         cameraCancellation?.Dispose(); cameraCancellation = null;
         var old = preview.Image; preview.Image = null; old?.Dispose();
         status.Text = "Камера остановлена";
+        cameraLoader.Visible = false;
     }
 
     private void CameraLoop(CancellationToken token)
     {
         try
         {
-            using var capture = new VideoCapture(0);
-            if (!capture.IsOpened()) throw new InvalidOperationException("Веб-камера не найдена или занята другой программой.");
-            capture.FrameWidth = 960; capture.FrameHeight = 540;
-            using var engine = new FaceEngine();
+            using var capture = CameraDevice.Open(token);
+            using (var first = new Mat()) {
+                if (capture.Read(first) && !first.Empty()) {
+                    var image = BitmapConverter.ToBitmap(first);
+                    SafeUi(() => { var old = preview.Image; preview.Image = image; old?.Dispose(); cameraLoader.Visible = false; status.Text = "Камера подключена · Подготовка распознавания…"; }, image.Dispose);
+                }
+            }
             var allowed = VisibleStudents().Select(s => s.Id).ToHashSet();
-            engine.Train(store.Samples().Where(x => allowed.Contains(x.StudentId)));
+            var samples = store.Samples().Where(x => allowed.Contains(x.StudentId)).ToList();
+            var preparing = Task.Run(() => {
+                var faceEngine = new FaceEngine();
+                try { faceEngine.Train(samples, token); return faceEngine; }
+                catch { faceEngine.Dispose(); throw; }
+            });
+            using (var raw = new Mat()) {
+                while (!preparing.IsCompleted) {
+                    if (!token.IsCancellationRequested && capture.Read(raw) && !raw.Empty() && Interlocked.Exchange(ref pendingFrame, 1) == 0) {
+                        var image = BitmapConverter.ToBitmap(raw);
+                        SafeUi(() => { if (!token.IsCancellationRequested) { var old = preview.Image; preview.Image = image; old?.Dispose(); } else image.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); }, () => { image.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); });
+                    }
+                    Thread.Sleep(30);
+                }
+            }
+            using var engine = preparing.GetAwaiter().GetResult();
+            token.ThrowIfCancellationRequested();
+            SafeUi(() => { cameraLoader.Visible = false; status.Text = "Камера работает · Распознавание готово"; });
             var revision = trainingRevision;
             var streak = new Dictionary<int, int>();
             int? lastLessonId = activeLesson?.Id;
@@ -382,7 +420,7 @@ internal sealed class MainForm : Form
                 if (revision != trainingRevision)
                 {
                     allowed = VisibleStudents().Select(s => s.Id).ToHashSet();
-                    engine.Train(store.Samples().Where(x => allowed.Contains(x.StudentId))); revision = trainingRevision; streak.Clear();
+                    engine.Train(store.Samples().Where(x => allowed.Contains(x.StudentId)), token); revision = trainingRevision; streak.Clear();
                     students = VisibleStudents(); names = students.ToDictionary(s => s.Id, s => s.Name);
                 }
                 if (lastLessonId != activeLesson?.Id) { streak.Clear(); lastLessonId = activeLesson?.Id; }
@@ -396,7 +434,7 @@ internal sealed class MainForm : Form
                     var lesson = activeLesson;
                     if (streak[id] >= 5 && lesson != null && students.Any(s => s.Id == id && s.GroupName == lesson.GroupName))
                     {
-                        if (store.MarkPresent(lesson.Id, DateOnly.FromDateTime(DateTime.Today), id, "Камера")) SafeUi(() => { statsDirty = true; RefreshAttendance(); });
+                        if (store.MarkPresent(lesson.Id, DateOnly.FromDateTime(DateTime.Today), id, "Камера")) SafeUi(() => { statsDirty = true; WorkspaceChanged(); RefreshAttendance(); });
                         streak[id] = 0;
                     }
                 }
@@ -424,7 +462,8 @@ internal sealed class MainForm : Form
                 SafeUi(() => { var old = preview.Image; preview.Image = bitmap; old?.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); }, () => { bitmap.Dispose(); Interlocked.Exchange(ref pendingFrame, 0); });
             }
         }
-        catch (Exception ex) { SafeUi(() => status.Text = ex.Message); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { SafeUi(() => { status.Text = ex.Message; cameraLoader.Visible = false; }); }
     }
 
     private void SafeUi(Action action, Action? failure = null)
@@ -435,13 +474,16 @@ internal sealed class MainForm : Form
 
     protected override async void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!savingBeforeClose && workspace is not null && (workspace.HasChanges || workspace.IsSaving))
+        if (closingWork) { e.Cancel = true; return; }
+        if (!savingBeforeClose && workspace is not null && (workspace.HasChanges || workspace.IsSaving || attendanceSync?.HasChanges == true || statsDirty || publishingStats))
         {
             e.Cancel = true; base.OnFormClosing(e);
-            while (workspace.IsSaving) await Task.Delay(100);
+            closingWork = true;
+            await StopCameraAsync();
+            while (workspace.IsSaving || publishingStats) await Task.Delay(100);
             await SaveAndPublishAsync();
-            if (workspace.HasChanges) MessageBox.Show(this, "Не удалось сохранить в Firebase. Черновик сохранён на компьютере и восстановится после следующего входа.", "Сохранение");
-            savingBeforeClose = true; Close(); return;
+            if (workspace.HasChanges || attendanceSync?.HasChanges == true) MessageBox.Show(this, "Не удалось сохранить в Firebase. Оценки и посещаемость сохранены на компьютере; отправка повторится после следующего входа.", "Сохранение");
+            savingBeforeClose = true; closingWork = false; Close(); return;
         }
         autoSaveTimer.Stop(); autoSaveTimer.Dispose();
         if (workspace is not null) workspace.Changed -= WorkspaceChanged;

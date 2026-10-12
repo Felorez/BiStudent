@@ -7,6 +7,7 @@ internal sealed record FaceMatch(OpenCvSharp.Rect Bounds, int? StudentId, double
 
 internal sealed class FaceEngine : IDisposable
 {
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, float[]> sampleVectors = new();
     private static readonly (double X, double Y)[] AlignedLandmarks =
     [
         (38.2946, 51.6963), (73.5318, 51.5014), (56.0252, 71.7366),
@@ -34,14 +35,18 @@ internal sealed class FaceEngine : IDisposable
         recognitionNet = CvDnn.ReadNetFromOnnx(recognitionModel) ?? throw new InvalidOperationException("Не удалось загрузить модель SFace.");
     }
 
-    public void Train(IEnumerable<(int StudentId, byte[] Image)> samples)
+    public void Train(IEnumerable<(int StudentId, byte[] Image)> samples, CancellationToken cancellation = default)
     {
         enrolled.Clear();
         foreach (var sample in samples)
         {
+            cancellation.ThrowIfCancellationRequested();
+            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(sample.Image));
+            if (sampleVectors.TryGetValue(key, out var cached)) { enrolled.Add((sample.StudentId, cached)); continue; }
             using var aligned = Cv2.ImDecode(sample.Image, ImreadModes.Color);
             if (aligned.Empty() || aligned.Width != 112 || aligned.Height != 112) continue;
-            enrolled.Add((sample.StudentId, Feature(aligned)));
+            var vector = Feature(aligned); sampleVectors[key] = vector;
+            enrolled.Add((sample.StudentId, vector));
         }
     }
 

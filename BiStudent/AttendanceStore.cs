@@ -23,6 +23,42 @@ internal sealed record GradeRow(int Id, int StudentId, string Subject, DateOnly 
 
 internal sealed class AttendanceStore
 {
+    internal string DataDirectory => directory;
+    public List<SyncedAttendance> ExportAttendance(string group)
+    {
+        var lessons = Lessons().ToDictionary(x => x.Id);
+        var result = new List<SyncedAttendance>();
+        using var connection = Open(); using var command = connection.CreateCommand();
+        command.CommandText = "SELECT s.cloud_id,a.lesson_id,a.lesson_date,a.seen_at,a.method FROM attendance a JOIN students s ON s.id=a.student_id WHERE s.group_name=$group AND s.cloud_id<>''";
+        command.Parameters.AddWithValue("$group", group); using var reader = command.ExecuteReader();
+        while (reader.Read()) {
+            var lesson = lessons[reader.GetInt32(1)];
+            if (lesson.GroupName == group) result.Add(new(reader.GetString(0).Split('/').Last(), lesson with { Id = 0 }, reader.GetString(2), reader.GetString(3), reader.GetString(4)));
+        }
+        return result;
+    }
+    public void ApplyAttendance(SyncedAttendance row)
+    {
+        var student = Students().FirstOrDefault(x => x.GroupName == row.Lesson.GroupName && x.CloudId.Split('/').Last() == row.StudentId);
+        if (student is null) return;
+        var lesson = Lessons().FirstOrDefault(x => (x with { Id = 0 }) == row.Lesson);
+        if (lesson is null) {
+            if (!row.Present) return;
+            using var connection = Open(); using var insert = connection.CreateCommand();
+            insert.CommandText = "INSERT INTO lessons(subject,group_name,weekday,start_minutes,end_minutes,parity,room,valid_from,valid_to,one_off_date,semester_start) VALUES($subject,$group,$day,$start,$end,$parity,$room,$from,$to,$once,$semester)";
+            insert.Parameters.AddWithValue("$subject",row.Lesson.Subject); insert.Parameters.AddWithValue("$group",row.Lesson.GroupName);
+            insert.Parameters.AddWithValue("$day",(int)row.Lesson.Day); insert.Parameters.AddWithValue("$start",(int)row.Lesson.Start.TotalMinutes); insert.Parameters.AddWithValue("$end",(int)row.Lesson.End.TotalMinutes);
+            insert.Parameters.AddWithValue("$parity",row.Lesson.Parity); insert.Parameters.AddWithValue("$room",row.Lesson.Room);
+            insert.Parameters.AddWithValue("$from",(object?)row.Lesson.ValidFrom?.ToString("yyyy-MM-dd") ?? DBNull.Value); insert.Parameters.AddWithValue("$to",(object?)row.Lesson.ValidTo?.ToString("yyyy-MM-dd") ?? DBNull.Value);
+            insert.Parameters.AddWithValue("$once",(object?)row.Lesson.OneOffDate?.ToString("yyyy-MM-dd") ?? DBNull.Value); insert.Parameters.AddWithValue("$semester",(object?)row.Lesson.SemesterStart?.ToString("yyyy-MM-dd") ?? DBNull.Value);
+            insert.ExecuteNonQuery(); lesson = Lessons().First(x => (x with { Id = 0 }) == row.Lesson);
+        }
+        var date = DateOnly.ParseExact(row.Date,"yyyy-MM-dd");
+        if (!row.Present) { RemoveMark(lesson.Id,date,student.Id); return; }
+        using var db = Open(); using var save = db.CreateCommand();
+        save.CommandText = "INSERT INTO attendance(lesson_id,lesson_date,student_id,seen_at,method) VALUES($lesson,$date,$student,$seen,$method) ON CONFLICT(lesson_id,lesson_date,student_id) DO UPDATE SET seen_at=$seen,method=$method";
+        save.Parameters.AddWithValue("$lesson",lesson.Id); save.Parameters.AddWithValue("$date",row.Date); save.Parameters.AddWithValue("$student",student.Id); save.Parameters.AddWithValue("$seen",row.SeenAt); save.Parameters.AddWithValue("$method",row.Method); save.ExecuteNonQuery();
+    }
     public List<PublicAttendance> PublicAttendance(string groupName)
     {
         using var connection = Open(); using var command = connection.CreateCommand();

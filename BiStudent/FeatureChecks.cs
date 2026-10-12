@@ -39,6 +39,7 @@ internal static class FeatureChecks
         if (store.Grades(student).Count != 0) throw new InvalidOperationException("Оценки удалённого студента остались в базе.");
         CheckAuthAsync().GetAwaiter().GetResult();
         CacheChecks.RunAsync(directory).GetAwaiter().GetResult();
+        AttendanceChecks.RunAsync(directory).GetAwaiter().GetResult();
         CheckStarterData(directory);
     }
 

@@ -13,6 +13,14 @@ service cloud.firestore {
       match /students/{studentId} {
         allow read, create, update: if teacher();
       }
+      match /attendance/{recordId} {
+        allow read: if teacher();
+        allow create, update: if teacher()
+          && request.resource.data.studentId is string
+          && request.resource.data.date is string
+          && request.resource.data.present in [0, 1]
+          && request.resource.data.payload is string;
+      }
       match /grades/{gradeId} {
         allow read: if teacher();
         allow create, update: if teacher()

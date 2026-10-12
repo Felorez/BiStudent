@@ -14,6 +14,57 @@ namespace BiStudent
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Length == 2 && args[0] == "--sync-attendance")
+            {
+                try {
+                    using var cloud = CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult();
+                    var snapshot = cloud.LoadAsync().GetAwaiter().GetResult();
+                    var store = new AttendanceStore(); store.ApplyCloudRoster(snapshot, FirebaseSettings.Load().GroupId);
+                    var sync = new AttendanceSync(store,cloud,snapshot); sync.SaveAsync().GetAwaiter().GetResult();
+                    var other = cloud.LoadAsync().GetAwaiter().GetResult();
+                    var copy = new AttendanceStore(Path.Combine(AppContext.BaseDirectory,"diagnostics","attendance-real-fresh-" + Guid.NewGuid().ToString("N")));
+                    copy.ApplyCloudRoster(other,FirebaseSettings.Load().GroupId); var restored = new AttendanceSync(copy,cloud,other);
+                    if (restored.HasChanges || copy.ExportAttendance(snapshot.GroupName).Count != other.Attendance.Count(x => x.Present)) throw new Exception("Fresh device restore failed.");
+                    new PublicStatsPublisher(cloud,store).PublishAsync(snapshot).GetAwaiter().GetResult();
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"attendance-result.txt"),$"OK: Firebase attendance records={other.Attendance.Count}; present={other.Attendance.Count(x => x.Present)}; fresh device restored; local pending={sync.HasChanges}"); return 0;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"attendance-error.txt"),ex.ToString()); return 1; }
+            }
+            if (args.Contains("--camera-check"))
+            {
+                try {
+                    var results = new List<string>();
+                    for (var i=0;i<2;i++) {
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                        using var camera = CameraDevice.Open(CancellationToken.None); using var frame = new OpenCvSharp.Mat();
+                        var deadline = DateTime.UtcNow.AddSeconds(10);
+                        while ((!camera.Read(frame) || frame.Empty()) && DateTime.UtcNow < deadline) Thread.Sleep(20);
+                        if (frame.Empty()) throw new Exception("Камера не вернула кадр.");
+                        results.Add($"Run {i+1}: first frame={watch.ElapsedMilliseconds}ms; backend={camera.GetBackendName()}; frame={frame.Width}x{frame.Height}");
+                    }
+                    File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"camera-result.txt"),results); return 0;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"camera-error.txt"),ex.ToString()); return 1; }
+            }
+            if (args.Contains("--camera-ui-check"))
+            {
+                try {
+                    Application.EnableVisualStyles();
+                    var directory = Path.Combine(AppContext.BaseDirectory,"diagnostics"); Directory.CreateDirectory(directory);
+                    var store = new AttendanceStore(Path.Combine(directory,"camera-ui-" + Guid.NewGuid().ToString("N")));
+                    using var form = new EnrollmentForm(store,new Student(1,"Тест интерфейса","Т-1",0));
+                    form.Show(); Application.DoEvents();
+                    using (var initial = new System.Drawing.Bitmap(form.Width,form.Height)) { form.DrawToBitmap(initial,new System.Drawing.Rectangle(0,0,form.Width,form.Height)); initial.Save(Path.Combine(directory,"enrollment-loader.png")); }
+                    var preview = (PictureBox)typeof(EnrollmentForm).GetField("preview",System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(form)!;
+                    var deadline = DateTime.UtcNow.AddSeconds(20);
+                    while (preview.Image is null && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(20); }
+                    var ready = preview.Image is not null;
+                    using (var image = new System.Drawing.Bitmap(form.Width,form.Height)) { form.DrawToBitmap(image,new System.Drawing.Rectangle(0,0,form.Width,form.Height)); image.Save(Path.Combine(directory,"enrollment-ready.png")); }
+                    form.Close(); while (!form.IsDisposed) { Application.DoEvents(); Thread.Sleep(20); }
+                    using var lesson = new LessonForm(store,new CloudSnapshot("Т-1",[],[new("csharp","Программирование C#"),new("economics","Основы экономики и предпринимательской деятельности")],[]));
+                    lesson.Show(); Application.DoEvents(); using var lessonImage = new System.Drawing.Bitmap(lesson.Width,lesson.Height);
+                    lesson.DrawToBitmap(lessonImage,new System.Drawing.Rectangle(0,0,lesson.Width,lesson.Height)); lessonImage.Save(Path.Combine(directory,"lesson-choices.png")); lesson.Close();
+                    File.WriteAllText(Path.Combine(directory,"camera-ui-check.txt"),"Camera ready=" + ready + "; asynchronous close completed"); return ready ? 0 : 1;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"camera-ui-error.txt"),ex.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--publish-stats")
             {
                 try

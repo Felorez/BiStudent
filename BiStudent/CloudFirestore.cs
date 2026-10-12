@@ -9,12 +9,23 @@ namespace BiStudent;
 internal sealed record CloudStudent(string Id, int Ordinal, string Name);
 internal sealed record CloudSubject(string Id, string Name) { public override string ToString() => Name; }
 internal sealed record CloudGrade(string Id, string StudentId, string SubjectId, int? Score, DateOnly? Date, string Comment, string UpdateTime);
-internal sealed record CloudSnapshot(string GroupName, List<CloudStudent> Students, List<CloudSubject> Subjects, List<CloudGrade> Grades);
+internal sealed record CloudSnapshot(string GroupName, List<CloudStudent> Students, List<CloudSubject> Subjects, List<CloudGrade> Grades)
+{
+    public List<SyncedAttendance> Attendance { get; init; } = [];
+}
 internal sealed record CloudSeed(string GroupName, List<CloudStudent> Students, List<CloudSubject> Subjects);
 
 internal sealed class CloudFirestore : IDisposable
 {
     internal int RequestsSent { get; private set; }
+    public async Task SaveAttendanceAsync(IEnumerable<SyncedAttendance> changes)
+    {
+        var writes = changes.Select(x => new { update = new { name = GroupPath + "/attendance/" + x.Key, fields = Fields(new() {
+            ["studentId"] = x.StudentId, ["date"] = x.Date, ["present"] = x.Present ? 1 : 0, ["payload"] = JsonSerializer.Serialize(x)
+        }) } }).ToArray();
+        if (writes.Length == 0) return;
+        using var result = await SendAsync(HttpMethod.Post, DocumentRoot + ":commit", new { writes }).ConfigureAwait(false);
+    }
     public async Task PublishPublicStatsAsync(string payload)
     {
         using var result = await SendAsync(HttpMethod.Patch, DocumentRoot + "/publicStats/" + settings.GroupId,
@@ -184,12 +195,14 @@ internal sealed class CloudFirestore : IDisposable
         var fields = group!.RootElement.GetProperty("fields");
         var subjects = fields.GetProperty("subjects").GetProperty("arrayValue").GetProperty("values").EnumerateArray()
             .Select(x => { var item = x.GetProperty("mapValue").GetProperty("fields"); return new CloudSubject(Text(item, "id"), Text(item, "name")); }).ToList();
-        var studentsTask = ListAsync("students"); var gradesTask = ListAsync("grades");
-        await Task.WhenAll(studentsTask, gradesTask).ConfigureAwait(false);
+        var studentsTask = ListAsync("students"); var gradesTask = ListAsync("grades"); var attendanceTask = ListAsync("attendance");
+        await Task.WhenAll(studentsTask, gradesTask, attendanceTask).ConfigureAwait(false);
         var students = studentsTask.Result.Select(doc => { var f = doc.GetProperty("fields"); return new CloudStudent(Id(doc), int.Parse(f.GetProperty("ordinal").GetProperty("integerValue").GetString()!), Text(f, "name")); }).OrderBy(x => x.Ordinal).ToList();
         var grades = gradesTask.Result.Select(ParseGrade).ToList();
         if (subjects.Count != 6 || subjects.Select(x => x.Id).Distinct().Count() != 6) throw new InvalidOperationException("В Firestore должен быть список из шести предметов.");
-        return new CloudSnapshot(Text(fields, "name"), students, subjects, grades);
+        return new CloudSnapshot(Text(fields, "name"), students, subjects, grades) {
+            Attendance = attendanceTask.Result.Select(x => JsonSerializer.Deserialize<SyncedAttendance>(Text(x.GetProperty("fields"), "payload"))!).ToList()
+        };
     }
 
     public async Task<CloudGrade> SaveGradeAsync(CloudGrade grade, int? score, DateOnly? date, string comment)

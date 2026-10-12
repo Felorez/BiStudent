@@ -47,6 +47,13 @@ internal sealed class EnrollmentForm : Form
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 110 };
     private Mat? latestFrame;
     private OpenCvSharp.Rect? latestFace;
+    private readonly CameraLoader loader = new();
+    private readonly CancellationTokenSource cancellation = new();
+    private Task? opening;
+    private bool closing;
+    private bool closeReady;
+    private readonly ModernButton captureButton = new() { Text = "Снять образец", Width = 156, Primary = true, Enabled = false };
+    private readonly ModernButton save = new() { Text = "Сохранить", Width = 130, Enabled = false };
 
     public EnrollmentForm(AttendanceStore store, Student? existing = null)
     {
@@ -69,44 +76,49 @@ internal sealed class EnrollmentForm : Form
         layout.Controls.Add(new Label { Text = existing is null ? "Новый студент" : "Обновить образцы лица", Dock = DockStyle.Fill, ForeColor = Theme.Text, Font = Theme.Font(20, FontStyle.Bold) }, 0, 0);
         layout.Controls.Add(FormStyle.Caption("ФИО"), 0, 1); layout.Controls.Add(nameBox, 0, 2);
         layout.Controls.Add(FormStyle.Caption("ГРУППА"), 0, 3); layout.Controls.Add(groupBox, 0, 4);
-        var video = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; video.Controls.Add(preview); layout.Controls.Add(video, 0, 5);
+        var video = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; video.Controls.Add(preview); preview.Controls.Add(loader); loader.BringToFront(); layout.Controls.Add(video, 0, 5);
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, BackColor = Theme.Background };
         bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); bottom.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         feedback.Dock = DockStyle.Fill; bottom.Controls.Add(feedback, 0, 0);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background };
-        var captureButton = new ModernButton { Text = "Снять образец", Width = 156, Primary = true };
-        var save = new ModernButton { Text = "Сохранить", Width = 130 };
         var cancel = new ModernButton { Text = "Отмена", Width = 110 };
-        captureButton.Click += (_, _) => CaptureSample();
+        captureButton.Click += async (_, _) => await CaptureSampleAsync();
         save.Click += (_, _) => Save();
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         actions.Controls.Add(captureButton); actions.Controls.Add(save); actions.Controls.Add(cancel);
         bottom.Controls.Add(actions, 0, 1); layout.Controls.Add(bottom, 0, 6);
         Controls.Add(layout);
         timer.Tick += (_, _) => ReadFrame();
-        Shown += (_, _) => OpenCamera();
+        DoubleBuffered = true;
+        Shown += async (_, _) => { opening = OpenCameraAsync(); await opening; };
     }
 
-    private void OpenCamera()
+    private async Task OpenCameraAsync()
     {
         try
         {
-            capture = new VideoCapture(0, VideoCaptureAPIs.DSHOW);
-            if (!capture.IsOpened()) { capture.Dispose(); capture = new VideoCapture(0); }
-            if (!capture.IsOpened()) throw new InvalidOperationException("Камера не найдена или занята.");
-            capture.FrameWidth = 800; capture.FrameHeight = 500;
-            engine = new FaceEngine();
+            var resources = await Task.Run(() => {
+                var device = CameraDevice.Open(cancellation.Token);
+                try { return (Device: device, Engine: new FaceEngine()); }
+                catch { device.Dispose(); throw; }
+            });
+            capture = resources.Device; engine = resources.Engine;
+            if (closing) return;
             timer.Start();
         }
-        catch (Exception ex) { feedback.Text = ex.Message; }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!closing) { feedback.Text = ex.Message; loader.Text = ex.Message; loader.Invalidate(); } }
     }
 
-    private void ReadFrame()
+    private bool reading;
+    private async void ReadFrame()
     {
-        if (capture is null || engine is null) return;
+        if (capture is null || engine is null || reading || closing) return;
+        reading = true;
+        try {
         using var frame = new Mat();
-        if (!capture.Read(frame) || frame.Empty()) return;
-        var faces = engine.Detect(frame);
+        var faces = await Task.Run(() => { if (!capture.Read(frame) || frame.Empty()) return null; return engine.Detect(frame); });
+        if (closing || faces is null) return;
         latestFace = faces.Count == 1 ? faces[0] : null;
         latestFrame?.Dispose(); latestFrame = frame.Clone();
         var bitmap = BitmapConverter.ToBitmap(frame);
@@ -114,21 +126,35 @@ internal sealed class EnrollmentForm : Form
         using (var pen = new Pen(faces.Count == 1 ? Theme.Green : Theme.Red, 3))
             foreach (var face in faces) g.DrawRectangle(pen, face.X, face.Y, face.Width, face.Height);
         var old = preview.Image; preview.Image = bitmap; old?.Dispose();
+        loader.Visible = false; captureButton.Enabled = samples.Count < 3;
+        }
+        catch (Exception ex) { if (!closing) feedback.Text = ex.Message; }
+        finally { reading = false; }
     }
 
-    private void CaptureSample()
+    private bool processingSample;
+    private async Task CaptureSampleAsync()
     {
+        if (processingSample || closing) return;
+        timer.Stop();
+        while (reading) await Task.Delay(20);
+        if (closing) return;
         if (latestFace is not { } face || latestFrame is null)
-        { feedback.Text = "Для снимка в кадре должно быть ровно одно хорошо видимое лицо."; return; }
-        if (samples.Count >= 3) { feedback.Text = "Три образца уже получены. Сохраните студента."; return; }
-        try { samples.Add(engine!.CaptureSample(latestFrame, requireSingle: true)); }
-        catch (Exception ex) { feedback.Text = ex.Message; return; }
+        { feedback.Text = "Для снимка в кадре должно быть ровно одно хорошо видимое лицо."; timer.Start(); return; }
+        if (samples.Count >= 3) { feedback.Text = "Три образца уже получены. Сохраните студента."; timer.Start(); return; }
+        processingSample = true; captureButton.Enabled = save.Enabled = false;
+        loader.Text = "Обработка образца лица…"; loader.Visible = true;
+        using var frame = latestFrame.Clone();
+        try { var sample = await Task.Run(() => engine!.CaptureSample(frame, requireSingle: true)); if (closing) return; samples.Add(sample); }
+        catch (Exception ex) { if (!closing) feedback.Text = ex.Message; return; }
+        finally { processingSample = false; if (!closing) { loader.Visible = false; captureButton.Enabled = samples.Count < 3; save.Enabled = samples.Count == 3; timer.Start(); } }
         feedback.Text = samples.Count switch
         {
             1 => "1/3 · Теперь немного поверните голову влево.",
             2 => "2/3 · Теперь немного поверните голову вправо.",
             _ => "3/3 · Готово, сохраните образцы."
         };
+        save.Enabled = samples.Count == 3;
     }
 
     private void Save()
@@ -142,9 +168,24 @@ internal sealed class EnrollmentForm : Form
         Close();
     }
 
+    protected override async void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (closing && !closeReady) { e.Cancel = true; return; }
+        if (!closing) {
+            e.Cancel = true; closing = true; cancellation.Cancel(); timer.Stop();
+            captureButton.Enabled = save.Enabled = false; loader.Text = "Остановка камеры…"; loader.Visible = true;
+            if (opening is not null) await opening;
+            while (reading || processingSample) await Task.Delay(30);
+            closeReady = true;
+            Close(); return;
+        }
+        base.OnFormClosing(e);
+    }
+
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         timer.Stop(); timer.Dispose(); capture?.Dispose(); engine?.Dispose(); latestFrame?.Dispose(); preview.Image?.Dispose();
+        cancellation.Dispose();
         base.OnFormClosed(e);
     }
 }
@@ -152,19 +193,31 @@ internal sealed class EnrollmentForm : Form
 internal sealed class LessonForm : Form
 {
     private readonly AttendanceStore store;
-    private readonly TextBox subject = FormStyle.Input("Например, Математика");
-    private readonly TextBox group = FormStyle.Input("Например, ИС-21");
-    private readonly ComboBox day = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, FlatStyle = FlatStyle.Flat, Font = Theme.Font(11) };
+    private readonly ComboBox subject = Choice();
+    private readonly ComboBox group = Choice();
+    private readonly ComboBox day = Choice();
     private readonly TextBox start = FormStyle.Input("09:00");
     private readonly TextBox end = FormStyle.Input("10:00");
 
-    public LessonForm(AttendanceStore store)
+    private static ComboBox Choice()
+    {
+        var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, FlatStyle = FlatStyle.Flat, Font = Theme.Font(11), DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 26 };
+        box.DrawItem += (_, e) => {
+            using var brush = new SolidBrush((e.State & DrawItemState.Selected) != 0 ? Theme.SurfaceHover : Theme.Surface);
+            e.Graphics.FillRectangle(brush,e.Bounds);
+            if (e.Index >= 0) TextRenderer.DrawText(e.Graphics, box.Items[e.Index]?.ToString() ?? "",box.Font,new Rectangle(e.Bounds.X+6,e.Bounds.Y,e.Bounds.Width-6,e.Bounds.Height),Theme.Text,TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        };
+        return box;
+    }
+
+    public LessonForm(AttendanceStore store, CloudSnapshot? snapshot = null)
     {
         this.store = store;
-        FormStyle.Dialog(this, "Новое занятие", new System.Drawing.Size(480, 490));
-        group.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
-        group.AutoCompleteSource = AutoCompleteSource.CustomSource;
-        group.AutoCompleteCustomSource.AddRange(store.Students().Select(s => s.GroupName).Distinct().ToArray());
+        FormStyle.Dialog(this, "Новое занятие", new System.Drawing.Size(740, 490));
+        subject.Items.AddRange((snapshot?.Subjects.Select(s => s.Name) ?? new[] { "Программирование на языке высокого уровня", "Программирование C#", "Искусственный интеллект OpenCV", "База данных PL SQL/MongoDB", "Автоматизация DevOps", "Основы экономики и предпринимательской деятельности" }).Cast<object>().ToArray());
+        subject.SelectedIndex = 0;
+        group.Items.AddRange((snapshot is null ? store.Students().Select(s => s.GroupName).Distinct() : new[] { snapshot.GroupName }).Cast<object>().ToArray());
+        if (group.Items.Count > 0) group.SelectedIndex = 0;
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), RowCount = 11, BackColor = Theme.Background };
         for (var i = 0; i < 10; i++) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, i % 2 == 0 ? 26 : 40));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
