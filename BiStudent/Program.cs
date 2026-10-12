@@ -14,6 +14,85 @@ namespace BiStudent
         [STAThread]
         static int Main(string[] args)
         {
+            if (args.Contains("--distance-check"))
+            {
+                try
+                {
+                    var samples = new AttendanceStore().Samples();
+                    if (samples.Count == 0) throw new InvalidOperationException("Нет локальных образцов для проверки.");
+                    using var engine = new FaceEngine();
+                    engine.Train(samples);
+                    var lines = new List<string>();
+                    var detectedSmall = 0; var recognizedSmall = 0;
+                    foreach (var sample in samples)
+                    {
+                        using var image = OpenCvSharp.Cv2.ImDecode(sample.Image, OpenCvSharp.ImreadModes.Color);
+                        foreach (var size in new[] { 96, 64, 48, 36 })
+                        {
+                            using var frame = new OpenCvSharp.Mat(720,1280,OpenCvSharp.MatType.CV_8UC3,OpenCvSharp.Scalar.All(60));
+                            using var resized = new OpenCvSharp.Mat();
+                            OpenCvSharp.Cv2.Resize(image,resized,new OpenCvSharp.Size(size,size),0,0,OpenCvSharp.InterpolationFlags.Area);
+                            using var target = new OpenCvSharp.Mat(frame,new OpenCvSharp.Rect(600,300,size,size)); resized.CopyTo(target);
+                            var watch = System.Diagnostics.Stopwatch.StartNew(); var matches = engine.Scan(frame);
+                            lines.Add($"sample student={sample.StudentId}; image={size}px; detected={matches.Count}; correct={matches.Any(x=>x.StudentId==sample.StudentId)}; elapsed={watch.ElapsedMilliseconds}ms; " + string.Join("; ",matches.Select(x=>$"bounds={x.Bounds.Width}x{x.Bounds.Height}, similarity={x.Similarity:F3}, id={x.StudentId}")));
+                            if (size == 64) { detectedSmall += matches.Count; recognizedSmall += matches.Count(x=>x.StudentId==sample.StudentId); }
+                            if (matches.Any(x=>x.StudentId is int id && id!=sample.StudentId)) throw new InvalidOperationException("Уменьшенный образец принят за другого студента.");
+                        }
+                    }
+                    using var blank = new OpenCvSharp.Mat(720,1280,OpenCvSharp.MatType.CV_8UC3,OpenCvSharp.Scalar.All(60));
+                    if (engine.Scan(blank).Count != 0) throw new InvalidOperationException("Лицо найдено в пустом кадре.");
+                    File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"distance-result.txt"),lines);
+                    if (detectedSmall!=samples.Count || recognizedSmall!=samples.Count) throw new InvalidOperationException("Не все уменьшенные лица распознаны.");
+                    return 0;
+                }
+                catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"distance-error.txt"),ex.ToString()); return 1; }
+            }
+            if (args.Length==2 && args[0]=="--enrollment-check")
+            {
+                string? code=null; CloudFirestore? cloud=null;
+                try {
+                    cloud=CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult();
+                    code=cloud.CreateFaceInviteAsync(new CloudStudent("_diagnostic_registration",0,"Проверка регистрации")).GetAwaiter().GetResult();
+                    var settings=FirebaseSettings.Load(); var root=$"https://firestore.googleapis.com/v1/projects/{settings.ProjectId}/databases/(default)/documents/groups/{settings.GroupId}";
+                    using var http=new System.Net.Http.HttpClient();
+                    using var invite=http.GetAsync(root+"/faceInvites/"+code).GetAwaiter().GetResult(); if (!invite.IsSuccessStatusCode) throw new Exception("Code cannot be read anonymously.");
+                    var body=System.Text.Json.JsonSerializer.Serialize(new { fields=new { studentId=new { stringValue="_diagnostic_registration" },payload=new { stringValue="{\"samples\":[]}" } } });
+                    using var submitted=http.PatchAsync(root+"/faceSubmissions/"+code+"?currentDocument.exists=false",new System.Net.Http.StringContent(body,System.Text.Encoding.UTF8,"application/json")).GetAwaiter().GetResult();
+                    if (!submitted.IsSuccessStatusCode) throw new Exception("Anonymous code submission denied.");
+                    using var duplicate=http.PatchAsync(root+"/faceSubmissions/"+code+"?currentDocument.exists=false",new System.Net.Http.StringContent(body,System.Text.Encoding.UTF8,"application/json")).GetAwaiter().GetResult();
+                    if (duplicate.IsSuccessStatusCode) throw new Exception("Code accepted twice.");
+                    using var privateRead=http.GetAsync(root+"/faceSubmissions/"+code).GetAwaiter().GetResult(); if (privateRead.StatusCode!=System.Net.HttpStatusCode.Forbidden) throw new Exception("Raw face submission publicly readable.");
+                    using var listFaces=http.GetAsync(root+"/faces").GetAwaiter().GetResult(); if (listFaces.StatusCode!=System.Net.HttpStatusCode.Forbidden) throw new Exception("Cloud faces publicly readable.");
+                    var snapshot=cloud.LoadAsync().GetAwaiter().GetResult(); if (!snapshot.FaceSubmissions.Any(x=>x.SubmissionCode==code)) throw new Exception("Teacher cannot see submission.");
+                    cloud.RevokeFaceInviteAsync(code).GetAwaiter().GetResult(); code=null;
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"enrollment-result.txt"),"OK: anonymous code lookup; single submission; repeat rejected; private faces/submissions denied; teacher receives submission; diagnostic invite revoked and submission removed"); return 0;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"enrollment-error.txt"),ex.ToString()); return 1; }
+                finally { if (cloud is not null && code is not null) { try { cloud.RevokeFaceInviteAsync(code).GetAwaiter().GetResult(); } catch { } } cloud?.Dispose(); }
+            }
+            if (args.Length==2 && args[0]=="--sync-faces")
+            {
+                try {
+                    using var cloud=CloudDiagnostics.ConnectAsync(args[1]).GetAwaiter().GetResult(); var snapshot=cloud.LoadAsync().GetAwaiter().GetResult();
+                    var settings=FirebaseSettings.Load(); var store=new AttendanceStore(); store.MigrateTeacher(settings.PreviousTeacherUid,settings.TeacherUid,settings.TeacherName); store.ApplyCloudRoster(snapshot,settings.GroupId);
+                    var sync=new FaceSync(store,cloud,snapshot.GroupName); sync.ImportAsync(snapshot).GetAwaiter().GetResult(); sync.SaveAsync().GetAwaiter().GetResult();
+                    var fresh=cloud.LoadAsync().GetAwaiter().GetResult();
+                    var copy=new AttendanceStore(Path.Combine(AppContext.BaseDirectory,"diagnostics","faces-real-fresh-"+Guid.NewGuid().ToString("N"))); copy.ApplyCloudRoster(fresh,settings.GroupId);
+                    var restored=new FaceSync(copy,cloud,fresh.GroupName); restored.ImportAsync(fresh).GetAwaiter().GetResult();
+                    if (copy.Samples().Count!=fresh.Faces.Count*3 || restored.HasChanges) throw new Exception("Fresh device did not restore cloud faces.");
+                    new PublicStatsPublisher(cloud,store).PublishAsync(fresh).GetAwaiter().GetResult();
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"faces-result.txt"),$"OK: cloud faces={fresh.Faces.Count}; fresh device samples={copy.Samples().Count}; no pending={(!sync.HasChanges)}; import error={sync.Error ?? "none"}"); return 0;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"faces-error.txt"),ex.ToString()); return 1; }
+            }
+            if (args.Length==2 && args[0]=="--remember-check")
+            {
+                try {
+                    var settings=FirebaseSettings.Load(); using var json=System.Text.Json.JsonDocument.Parse(File.ReadAllText(args[1])); using var http=new System.Net.Http.HttpClient(); var auth=new FirebaseAuth(settings,http);
+                    var session=auth.SignInAsync(json.RootElement.GetProperty("password").GetString()!).GetAwaiter().GetResult(); RememberedSession.Save(settings,session);
+                    var restored=auth.RestoreAsync(RememberedSession.Load(settings)!).GetAwaiter().GetResult(); RememberedSession.Save(settings,restored);
+                    if (restored.Uid!=settings.TeacherUid) throw new Exception("Remembered account mismatch.");
+                    File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"remember-result.txt"),"OK: encrypted device token saved; fresh process can restore Firebase login; password not stored"); return 0;
+                } catch (Exception ex) { File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"remember-error.txt"),ex.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--sync-attendance")
             {
                 try {
@@ -120,7 +199,7 @@ namespace BiStudent
                     form.DrawToBitmap(bitmap, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height));
                     bitmap.Save(Path.Combine(AppContext.BaseDirectory, "diagnostics", "cloud-grades.png")); form.Close();
                     var requests = cloud.RequestsSent;
-                    using var main = new MainForm(new AttendanceStore(Path.Combine(AppContext.BaseDirectory, "diagnostics", "preview-store")), new TeacherSession("preview", "maral@gmail.com", "Мадина Апай"), cloud, workspace);
+                    using var main = new MainForm(new AttendanceStore(Path.Combine(AppContext.BaseDirectory, "diagnostics", "preview-store")), new TeacherSession("preview", "madina.niyazova.2023@mail.ru", "Ниязова Мадина Ержанкызы"), cloud, workspace);
                     main.Show(); Application.DoEvents();
                     using var mainImage = new System.Drawing.Bitmap(main.Width, main.Height);
                     main.DrawToBitmap(mainImage, new System.Drawing.Rectangle(0, 0, mainImage.Width, mainImage.Height)); mainImage.Save(Path.Combine(AppContext.BaseDirectory, "diagnostics", "cloud-main.png")); main.Close();
@@ -212,8 +291,8 @@ namespace BiStudent
                         throw new InvalidOperationException("Обновление лица изменило историю посещаемости.");
                     FeatureChecks.Run(directory);
                     Application.EnableVisualStyles();
-                    var teacher = new TeacherSession("self-test", "maral@gmail.com", "Мадина Апай");
-                    using (var login = new LoginForm())
+                    var teacher = new TeacherSession("self-test", "madina.niyazova.2023@mail.ru", "Ниязова Мадина Ержанкызы");
+                    using (var login = new LoginForm(false))
                     {
                         login.Show(); Application.DoEvents();
                         using var image = new System.Drawing.Bitmap(login.Width, login.Height);
@@ -259,10 +338,13 @@ namespace BiStudent
                 if (login.ShowDialog() != DialogResult.OK || login.Session is null) return 0;
                 var settings = FirebaseSettings.Load();
                 new AttendanceStore().RenameTeacher(settings.TeacherUid, settings.TeacherName);
+                var store = new AttendanceStore();
+                if (settings.PreviousTeacherUid.Length>0) store.MigrateTeacher(settings.PreviousTeacherUid,settings.TeacherUid,settings.TeacherName);
                 using var cloud = settings.UseCloudData ? new CloudFirestore(settings, login.Session) : null;
                 var workspace = cloud is null ? null : new CloudWorkspace(cloud, login.Session.Uid);
-                if (workspace is not null) { using var loading = new LoadingForm(workspace); if (loading.ShowDialog() != DialogResult.OK) return 0; }
-                using var main = new MainForm(teacher: login.Session, cloud: cloud, workspace: workspace);
+                var faceSync = cloud is null ? null : new FaceSync(store,cloud,settings.GroupName);
+                if (workspace is not null) { using var loading = new LoadingForm(workspace, async () => { store.ApplyCloudRoster(workspace.Snapshot!,settings.GroupId); await faceSync!.ImportAsync(workspace.Snapshot!); }); if (loading.ShowDialog() != DialogResult.OK) return 0; }
+                using var main = new MainForm(store:store,teacher: login.Session, cloud: cloud, workspace: workspace,faceSync:faceSync);
                 Application.Run(main);
                 if (!main.SignedOut) break;
             }

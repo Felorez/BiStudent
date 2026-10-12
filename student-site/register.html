@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0c101b">
+  <title>BiStudent · Регистрация лица</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="register.css">
+  <script src="config.js" defer></script><script src="register.js" defer></script>
+</head>
+<body>
+  <div class="site-shell registration-shell">
+    <header class="topbar"><a class="brand" href="index.html"><span class="brand-icon">B<span>•</span></span>BiStudent</a><a class="back-link" href="index.html">← К журналу группы</a></header>
+    <main>
+      <section class="intro registration-intro"><div><p class="eyebrow">ПОСЕЩАЕМОСТЬ ПО ЛИЦУ</p><h1>Три снимка.<br><span>Один студент.</span></h1><p class="intro-copy">Введите личный код от преподавателя и добавьте лицо.<br>Аккаунт и пароль студента не нужны.</p></div></section>
+      <section class="journal-card enrollment-card">
+        <ol class="steps" aria-label="Шаги регистрации"><li id="step-code" class="current">01 · Личный код</li><li id="step-camera">02 · Три снимка</li><li id="step-save">03 · Отправка</li></ol>
+        <form id="code-form" class="code-form"><label for="enrollment-code">Одноразовый код</label><div class="code-row"><input id="enrollment-code" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Код от преподавателя" required maxlength="80"><button id="check-code" type="submit" class="primary-button">Проверить код</button></div><p class="muted small">Код действует 24 часа и принимает один набор снимков. Передавайте только своё лицо.</p></form>
+        <div id="enrollment-notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <section id="capture-section" hidden>
+          <div class="section-heading"><div><p class="eyebrow">РЕГИСТРИРУЕМ СТУДЕНТА</p><h2 id="student-name"></h2></div><span id="photo-count" class="group-pill">0 / 3</span></div>
+          <div class="camera-toolbar"><label for="camera-select">Камера</label><select id="camera-select" disabled><option value="">Камера по умолчанию</option></select><button id="start-camera" class="secondary-button" type="button">Подключить камеру</button></div>
+          <div class="camera-stage"><video id="face-video" autoplay playsinline muted></video><div id="camera-placeholder">Подключите камеру, чтобы сделать снимки</div><div id="camera-loading" hidden><span class="spinner"></span><p>Подключаем камеру…</p></div></div>
+          <p id="pose-guide" class="pose-guide">Снимок 1: смотрите прямо в камеру. В кадре должно быть только ваше лицо.</p>
+          <div class="capture-actions"><button id="capture-photo" class="primary-button" type="button" disabled>Сделать снимок</button><button id="reset-photos" class="secondary-button" type="button" disabled>Переснять</button></div>
+          <div id="photos" class="photo-strip" aria-label="Сделанные снимки"></div>
+          <p class="muted small">Снимки доступны только преподавателю. При следующей синхронизации приложение проверит лицо и подготовит образцы для распознавания.</p>
+          <button id="send-photos" class="primary-button submit-photos" type="button" disabled>Отправить три снимка</button>
+        </section>
+        <section id="success-section" class="success-section" hidden><div class="success-icon">✓</div><h2>Снимки отправлены</h2><p>Преподаватель получит их при входе в приложение или обновлении из Firebase. Этот код уже использован.</p><a class="back-link" href="index.html">Вернуться к журналу →</a></section>
+      </section>
+    </main>
+    <footer class="site-footer"><span><b>BiStudent</b> · Регистрация лица</span><span>Индивидуальный код · Частные снимки</span></footer>
+  </div>
+</body>
+</html>

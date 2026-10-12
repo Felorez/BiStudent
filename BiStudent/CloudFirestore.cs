@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text;
 
 namespace BiStudent;
 
@@ -12,12 +13,46 @@ internal sealed record CloudGrade(string Id, string StudentId, string SubjectId,
 internal sealed record CloudSnapshot(string GroupName, List<CloudStudent> Students, List<CloudSubject> Subjects, List<CloudGrade> Grades)
 {
     public List<SyncedAttendance> Attendance { get; init; } = [];
+    public List<CloudFace> Faces { get; init; } = [];
+    public List<CloudFace> FaceSubmissions { get; init; } = [];
 }
 internal sealed record CloudSeed(string GroupName, List<CloudStudent> Students, List<CloudSubject> Subjects);
 
 internal sealed class CloudFirestore : IDisposable
 {
     internal int RequestsSent { get; private set; }
+    public async Task<string> CreateFaceInviteAsync(CloudStudent student)
+    {
+        var existing=await ListAsync("faceInvites");
+        var revoke=existing.Where(x=>Text(x.GetProperty("fields"),"studentId")==student.Id).Select(x=>new { update=new { name=x.GetProperty("name").GetString(),fields=Fields(new() { ["active"]=0 }) },updateMask=new { fieldPaths=new[] { "active" } } }).ToList();
+        foreach (var batch in revoke.Chunk(200)) { using var revoked=await SendAsync(HttpMethod.Post,DocumentRoot+":commit",new { writes=batch }); }
+        var code=Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20)).ToLowerInvariant();
+        using var result=await SendAsync(HttpMethod.Post,DocumentRoot+":commit",new { writes=new[] { new { update=new { name=GroupPath+"/faceInvites/"+code, fields=Fields(new() { ["studentId"]=student.Id,["studentName"]=student.Name,["active"]=1,["expiresAt"]=DateTimeOffset.UtcNow.AddHours(24) }) }, currentDocument=new { exists=false } } } });
+        return code;
+    }
+    public async Task RevokeFaceInviteAsync(string code)
+    {
+        using var result=await SendAsync(HttpMethod.Post,DocumentRoot+":commit",new { writes=new object[] {
+            new { update=new { name=GroupPath+"/faceInvites/"+code,fields=Fields(new() { ["active"]=0 }) },updateMask=new { fieldPaths=new[] { "active" } } },
+            new { delete=GroupPath+"/faceSubmissions/"+code }
+        } });
+    }
+    public async Task<CloudFace> SaveFaceAsync(CloudFace face)
+    {
+        if (face.Samples.Count!=3 || face.Format!="aligned112") throw new ArgumentException("Нужно три образца лица.");
+        var payload=JsonSerializer.Serialize(face with { UpdateTime="",SubmissionCode="" });
+        if (Encoding.UTF8.GetByteCount(payload)>750000) throw new ArgumentException("Образцы лица слишком большие.");
+        var writes=new List<object>();
+        var fields=Fields(new() { ["studentId"]=face.StudentId,["payload"]=payload });
+        if (face.UpdateTime.Length==0) writes.Add(new { update=new { name=GroupPath+"/faces/"+face.StudentId,fields },currentDocument=new { exists=false } });
+        else writes.Add(new { update=new { name=GroupPath+"/faces/"+face.StudentId,fields },currentDocument=new { updateTime=face.UpdateTime } });
+        if (face.SubmissionCode.Length>0) {
+            writes.Add(new { update=new { name=GroupPath+"/faceInvites/"+face.SubmissionCode,fields=Fields(new() { ["active"]=0 }) },updateMask=new { fieldPaths=new[] { "active" } } });
+            writes.Add(new { delete=GroupPath+"/faceSubmissions/"+face.SubmissionCode });
+        }
+        using var result=await SendAsync(HttpMethod.Post,DocumentRoot+":commit",new { writes });
+        return face with { UpdateTime=result!.RootElement.GetProperty("writeResults")[0].GetProperty("updateTime").GetString()! };
+    }
     public async Task SaveAttendanceAsync(IEnumerable<SyncedAttendance> changes)
     {
         var writes = changes.Select(x => new { update = new { name = GroupPath + "/attendance/" + x.Key, fields = Fields(new() {
@@ -148,6 +183,7 @@ internal sealed class CloudFirestore : IDisposable
             token = json.RootElement.GetProperty("id_token").GetString()!;
             refreshToken = json.RootElement.GetProperty("refresh_token").GetString()!;
             expiresAt = DateTimeOffset.UtcNow.AddSeconds(int.Parse(json.RootElement.GetProperty("expires_in").GetString()!));
+            if (RememberedSession.Exists) RememberedSession.Save(settings,new TeacherSession(teacher.Uid,settings.TeacherEmail,settings.TeacherName,token,refreshToken,expiresAt));
             return token;
         }
         finally { tokenGate.Release(); }
@@ -166,7 +202,7 @@ internal sealed class CloudFirestore : IDisposable
         {
             throw new InvalidOperationException(response.StatusCode switch
             {
-                HttpStatusCode.Forbidden => "Firestore отклонил доступ. Проверьте правила для Мадина Апай.",
+                HttpStatusCode.Forbidden => "Firestore отклонил доступ. Проверьте правила для Ниязова Мадина Ержанкызы.",
                 HttpStatusCode.NotFound => "Группа не найдена в Firestore. Проверьте, что данные загружены.",
                 HttpStatusCode.Unauthorized => "Сеанс Firebase завершён. Войдите заново.",
                 HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed => "Данные изменились на другом устройстве. Обновите список и повторите.",
@@ -195,13 +231,23 @@ internal sealed class CloudFirestore : IDisposable
         var fields = group!.RootElement.GetProperty("fields");
         var subjects = fields.GetProperty("subjects").GetProperty("arrayValue").GetProperty("values").EnumerateArray()
             .Select(x => { var item = x.GetProperty("mapValue").GetProperty("fields"); return new CloudSubject(Text(item, "id"), Text(item, "name")); }).ToList();
-        var studentsTask = ListAsync("students"); var gradesTask = ListAsync("grades"); var attendanceTask = ListAsync("attendance");
-        await Task.WhenAll(studentsTask, gradesTask, attendanceTask).ConfigureAwait(false);
+        var studentsTask = ListAsync("students"); var gradesTask = ListAsync("grades"); var attendanceTask = ListAsync("attendance"); var facesTask=ListAsync("faces"); var submissionsTask=ListAsync("faceSubmissions");
+        await Task.WhenAll(studentsTask, gradesTask, attendanceTask,facesTask,submissionsTask).ConfigureAwait(false);
         var students = studentsTask.Result.Select(doc => { var f = doc.GetProperty("fields"); return new CloudStudent(Id(doc), int.Parse(f.GetProperty("ordinal").GetProperty("integerValue").GetString()!), Text(f, "name")); }).OrderBy(x => x.Ordinal).ToList();
         var grades = gradesTask.Result.Select(ParseGrade).ToList();
+        var activeCodes = submissionsTask.Result.Count>0 ? (await ListAsync("faceInvites").ConfigureAwait(false)).Where(x=>x.GetProperty("fields").TryGetProperty("active",out var active) && active.GetProperty("integerValue").GetString()=="1").Select(Id).ToHashSet() : [];
         if (subjects.Count != 6 || subjects.Select(x => x.Id).Distinct().Count() != 6) throw new InvalidOperationException("В Firestore должен быть список из шести предметов.");
         return new CloudSnapshot(Text(fields, "name"), students, subjects, grades) {
-            Attendance = attendanceTask.Result.Select(x => JsonSerializer.Deserialize<SyncedAttendance>(Text(x.GetProperty("fields"), "payload"))!).ToList()
+            Attendance = attendanceTask.Result.Select(x => JsonSerializer.Deserialize<SyncedAttendance>(Text(x.GetProperty("fields"), "payload"))!).ToList(),
+            Faces=facesTask.Result.Select(x=>JsonSerializer.Deserialize<CloudFace>(Text(x.GetProperty("fields"),"payload"))! with { UpdateTime=x.GetProperty("updateTime").GetString()! }).ToList(),
+            FaceSubmissions=submissionsTask.Result.Where(x=>activeCodes.Contains(Id(x))).Select(x=> {
+                var fields=x.GetProperty("fields");
+                try { using var payload=JsonDocument.Parse(Text(fields,"payload"));
+                    return new CloudFace(Text(fields,"studentId"),Id(x),"photos",payload.RootElement.GetProperty("samples").EnumerateArray().Select(s=>s.GetString()!).ToList(),"",Id(x));
+                } catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException) {
+                    return new CloudFace(Text(fields,"studentId"),Id(x),"photos",[],"",Id(x));
+                }
+            }).ToList()
         };
     }
 
@@ -253,6 +299,7 @@ internal sealed class CloudFirestore : IDisposable
         null => new { nullValue = (object?)null },
         int number => new { integerValue = number.ToString(System.Globalization.CultureInfo.InvariantCulture) },
         string text => new { stringValue = text },
+        DateTimeOffset date => new { timestampValue = date.ToUniversalTime().ToString("O") },
         Dictionary<string, object?> map => new { mapValue = new { fields = Fields(map) } },
         IEnumerable<Dictionary<string, object?>> array => new { arrayValue = new { values = array.Select(Value).ToArray() } },
         _ => throw new ArgumentException("Неизвестный тип значения Firestore.")

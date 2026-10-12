@@ -23,6 +23,7 @@ internal sealed class MainForm : Form
     private bool statsDirty = true;
     private bool publishingStats;
     private AttendanceSync? attendanceSync;
+    private readonly FaceSync? faceSync;
     private readonly CameraLoader cameraLoader = new() { Visible = false };
     private CloudSnapshot? cloudSnapshot;
     private Label? pageSubtitle;
@@ -45,11 +46,12 @@ internal sealed class MainForm : Form
     private int pendingFrame;
     private bool cameraPage;
 
-    public MainForm(AttendanceStore? store = null, TeacherSession? teacher = null, CloudFirestore? cloud = null, CloudWorkspace? workspace = null)
+    public MainForm(AttendanceStore? store = null, TeacherSession? teacher = null, CloudFirestore? cloud = null, CloudWorkspace? workspace = null,FaceSync? faceSync = null)
     {
         this.store = store ?? new AttendanceStore();
         this.teacher = teacher;
         this.cloud = cloud;
+        this.faceSync=faceSync;
         statsPublisher = cloud is null ? null : new PublicStatsPublisher(cloud, this.store);
         this.workspace = workspace ?? (cloud is null ? null : new CloudWorkspace(cloud, teacher?.Uid ?? "test"));
         cloudSnapshot = this.workspace?.Snapshot;
@@ -137,7 +139,7 @@ internal sealed class MainForm : Form
         settingsButton.Click += (_, _) => { using var settings = new AutoSaveSettingsForm(savePreferences.Seconds); if (settings.ShowDialog(this) == DialogResult.OK) { savePreferences.Seconds = settings.Seconds; savePreferences.Save(); autoSaveTimer.Interval = settings.Seconds * 1000; } };
         accountHeading.Controls.Add(settingsButton, 1, 0); account.Controls.Add(accountHeading, 0, 0);
         var signOut = new ModernButton { Text = "Выйти", Dock = DockStyle.Fill, Margin = Padding.Empty, Enabled = teacher is not null };
-        signOut.Click += async (_, _) => { signOut.Enabled = false; await StopCameraAsync(); SignedOut = true; Close(); };
+        signOut.Click += async (_, _) => { signOut.Enabled = false; await StopCameraAsync(); RememberedSession.Forget(); SignedOut = true; Close(); };
         account.Controls.Add(signOut, 0, 1); sidebar.Controls.Add(account, 0, 2);
         layout.Controls.Add(sidebar, 0, 0);
         layout.Controls.Add(content, 1, 0);
@@ -182,7 +184,7 @@ internal sealed class MainForm : Form
             var student = VisibleStudents().FirstOrDefault(s => s.Id == id);
             if (student is null) return;
             using var form = new EnrollmentForm(store, student);
-            if (form.ShowDialog(this) == DialogResult.OK) { trainingRevision++; RefreshStudents(); }
+            if (form.ShowDialog(this) == DialogResult.OK) { trainingRevision++; RefreshStudents(); WorkspaceChanged(); }
         };
         var delete = new ModernButton { Text = "Удалить", Width = 120 };
         delete.Click += (_, _) =>
@@ -206,6 +208,20 @@ internal sealed class MainForm : Form
         };
         actions.Controls.Add(add); actions.Controls.Add(updateFace); actions.Controls.Add(grades); if (cloud is null) actions.Controls.Add(delete); else actions.Controls.Add(saveChanges); page.Controls.Add(actions, 0, 1);
         var card = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; card.Controls.Add(studentsTable); page.Controls.Add(card, 0, 2);
+        if (cloud is not null) {
+            page.RowCount=4; page.RowStyles.Add(new RowStyle(SizeType.Absolute,48));
+            var footer = new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=false };
+            var issueCode = new ModernButton { Text="Код регистрации лица на сайте",Width=290,Height=40 };
+            issueCode.Click += async (_,_) => {
+                if (studentsTable.CurrentRow?.Cells["Id"].Value is not int id) return;
+                var student=VisibleStudents().FirstOrDefault(s=>s.Id==id); if (student is null) return;
+                issueCode.Enabled=false;
+                try { var cloudStudent=cloudSnapshot!.Students.Single(s=>s.Id==student.CloudId.Split('/').Last()); var code=await cloud.CreateFaceInviteAsync(cloudStudent); using var dialog=new FaceInviteForm(student.Name,code); dialog.ShowDialog(this); }
+                catch (Exception ex) { MessageBox.Show(this,ex is InvalidOperationException ? ex.Message : "Не удалось выдать код. Проверьте интернет."); }
+                finally { if (!issueCode.IsDisposed) issueCode.Enabled=true; }
+            };
+            footer.Controls.Add(issueCode); page.Controls.Add(footer,0,3);
+        }
         RefreshStudents();
     }
 
@@ -230,8 +246,9 @@ internal sealed class MainForm : Form
 
     private async Task RefreshCloudAsync()
     {
-        if (workspace is null || cloudLoading) return;
+        if (workspace is null || cloudLoading || publishingStats) return;
         cloudLoading = true;
+        content.Enabled=false;
         if (pageSubtitle is not null) { pageSubtitle.Text = "Загрузка группы из Firebase…"; pageSubtitle.ForeColor = Theme.Muted; }
         try
         {
@@ -239,12 +256,13 @@ internal sealed class MainForm : Form
             var snapshot = workspace.Snapshot!;
             if (IsDisposed) return;
             store.ApplyCloudRoster(snapshot, FirebaseSettings.Load().GroupId);
+            if (faceSync is not null) await faceSync.ImportAsync(snapshot);
             attendanceSync = new AttendanceSync(store, cloud!, snapshot);
             cloudSnapshot = snapshot; trainingRevision++;
             if (!cameraPage) ShowStudents(); else RefreshSchedule();
         }
         catch (Exception ex) { if (!IsDisposed && pageSubtitle is not null) { pageSubtitle.ForeColor = Theme.Red; pageSubtitle.Text = ex is InvalidOperationException ? ex.Message : "Не удалось загрузить Firebase. Проверьте интернет и нажмите Обновить."; } }
-        finally { cloudLoading = false; }
+        finally { cloudLoading = false; if (!IsDisposed) content.Enabled=true; }
     }
 
     private void WorkspaceChanged()
@@ -252,28 +270,29 @@ internal sealed class MainForm : Form
         if (IsDisposed || workspace is null) return;
         cloudSnapshot = workspace.Snapshot;
         if (workspace.HasChanges) statsDirty = true;
-        saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true) && !workspace.IsSaving && !publishingStats;
+        saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true || faceSync?.HasChanges == true) && !workspace.IsSaving && !publishingStats;
         if (!cameraPage) RefreshStudents();
-        if (pageSubtitle is not null) { pageSubtitle.ForeColor = workspace.Error is null && attendanceError is null ? Theme.Muted : Theme.Red; pageSubtitle.Text = workspace.Error ?? attendanceError ?? (workspace.IsSaving ? "Сохранение изменений в Firebase…" : workspace.HasChanges || attendanceSync?.HasChanges == true ? $"Есть несохранённые изменения · Автосохранение каждые {savePreferences.Seconds} сек." : (cloudSnapshot?.GroupName ?? "") + " · Все изменения сохранены"); }
+        if (pageSubtitle is not null) { pageSubtitle.ForeColor = workspace.Error is null && attendanceError is null && faceSync?.Error is null ? Theme.Muted : Theme.Red; pageSubtitle.Text = workspace.Error ?? attendanceError ?? faceSync?.Error ?? (workspace.IsSaving ? "Сохранение изменений в Firebase…" : workspace.HasChanges || attendanceSync?.HasChanges == true || faceSync?.HasChanges == true ? $"Есть несохранённые изменения · Автосохранение каждые {savePreferences.Seconds} сек." : (cloudSnapshot?.GroupName ?? "") + " · Все изменения сохранены"); }
     }
 
     private async Task SaveAndPublishAsync()
     {
-        if (workspace is null || publishingStats) return;
-        if (!workspace.HasChanges && attendanceSync?.HasChanges != true && !statsDirty) return;
+        if (workspace is null || publishingStats || cloudLoading) return;
+        if (!workspace.HasChanges && attendanceSync?.HasChanges != true && faceSync?.HasChanges != true && !statsDirty) return;
         publishingStats = true;
         attendanceError = null;
         try {
         await workspace.SaveAsync();
+        if (faceSync is not null) await faceSync.SaveAsync();
         if (attendanceSync is not null) await attendanceSync.SaveAsync();
         if (workspace.IsSaving || workspace.HasChanges || workspace.Snapshot is null || !statsDirty || statsPublisher is null) return;
         statsDirty = false;
         await statsPublisher.PublishAsync(workspace.Snapshot);
         }
-        catch { statsDirty = true; attendanceError = "Не удалось сохранить посещаемость или обновить сайт. Повторим автоматически; данные остаются на компьютере."; }
+        catch { statsDirty = true; attendanceError = "Не удалось сохранить лица, посещаемость или обновить сайт. Данные остались на компьютере; повторим автоматически."; }
         finally {
             publishingStats = false;
-            saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true) && !workspace.IsSaving;
+            saveChanges.Enabled = (workspace.HasChanges || attendanceSync?.HasChanges == true || faceSync?.HasChanges == true) && !workspace.IsSaving;
             if (pageSubtitle is not null && attendanceError is not null) { pageSubtitle.ForeColor = Theme.Red; pageSubtitle.Text = attendanceError; }
         }
     }
@@ -307,6 +326,12 @@ internal sealed class MainForm : Form
         left.Controls.Add(lessonLabel, 0, 0);
         var videoCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(6) }; videoCard.Controls.Add(preview); preview.Controls.Add(cameraLoader); cameraLoader.BringToFront(); left.Controls.Add(videoCard, 0, 1);
         left.Controls.Add(status, 0, 2); body.Controls.Add(left, 0, 0);
+        var cameraFooter = new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,RowCount=1 };
+        cameraFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100)); cameraFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,154));
+        left.Controls.Remove(status); cameraFooter.Controls.Add(status,0,0);
+        var chooseCamera = new ModernButton { Text="Выбрать камеру",Dock=DockStyle.Fill,Height=38 };
+        chooseCamera.Click += async (_,_) => { var running=cameraTask is { IsCompleted:false }; await StopCameraAsync(); using var choice=new CameraSelectionForm(); if (choice.ShowDialog(this)==DialogResult.OK && running) await StartCameraAsync(); };
+        cameraFooter.Controls.Add(chooseCamera,1,0); left.Controls.Add(cameraFooter,0,2);
 
         var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, Margin = Padding.Empty };
         right.RowStyles.Add(new RowStyle(SizeType.Absolute, 39)); right.RowStyles.Add(new RowStyle(SizeType.Percent, 52)); right.RowStyles.Add(new RowStyle(SizeType.Absolute, 48)); right.RowStyles.Add(new RowStyle(SizeType.Absolute, 39)); right.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
@@ -450,7 +475,8 @@ internal sealed class MainForm : Form
                         var color = known ? Theme.Green : Theme.Red;
                         using var pen = new Pen(color, 3);
                         g.DrawRectangle(pen, match.Bounds.X, match.Bounds.Y, match.Bounds.Width, match.Bounds.Height);
-                        var name = known ? matchedName! : "Неизвестный";
+                        var tooSmall = match.Bounds.Width < FaceEngine.MinimumRecognitionSize || match.Bounds.Height < FaceEngine.MinimumRecognitionSize;
+                        var name = known ? matchedName! : tooSmall ? "Подойдите ближе" : "Неизвестный";
                         using var font = Theme.Font(13, FontStyle.Bold);
                         using var brush = new SolidBrush(color);
                         using var bg = new SolidBrush(Color.FromArgb(210, 11, 18, 32));
@@ -475,14 +501,14 @@ internal sealed class MainForm : Form
     protected override async void OnFormClosing(FormClosingEventArgs e)
     {
         if (closingWork) { e.Cancel = true; return; }
-        if (!savingBeforeClose && workspace is not null && (workspace.HasChanges || workspace.IsSaving || attendanceSync?.HasChanges == true || statsDirty || publishingStats))
+        if (!savingBeforeClose && workspace is not null && (workspace.HasChanges || workspace.IsSaving || attendanceSync?.HasChanges == true || faceSync?.HasChanges == true || statsDirty || publishingStats))
         {
             e.Cancel = true; base.OnFormClosing(e);
             closingWork = true;
             await StopCameraAsync();
             while (workspace.IsSaving || publishingStats) await Task.Delay(100);
             await SaveAndPublishAsync();
-            if (workspace.HasChanges || attendanceSync?.HasChanges == true) MessageBox.Show(this, "Не удалось сохранить в Firebase. Оценки и посещаемость сохранены на компьютере; отправка повторится после следующего входа.", "Сохранение");
+            if (workspace.HasChanges || attendanceSync?.HasChanges == true || faceSync?.HasChanges == true) MessageBox.Show(this, "Не удалось сохранить в Firebase. Данные сохранены на компьютере; отправка повторится после следующего входа.", "Сохранение");
             savingBeforeClose = true; closingWork = false; Close(); return;
         }
         autoSaveTimer.Stop(); autoSaveTimer.Dispose();

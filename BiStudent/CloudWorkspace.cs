@@ -41,7 +41,7 @@ internal sealed class CloudWorkspace
             var draft = JsonSerializer.Deserialize<GradeDraft>(File.ReadAllText(draftPath));
             if (draft is not null)
             {
-                foreach (var original in draft.Original) { baseline.RemoveAll(x => x.Id == original.Id); baseline.Add(original); }
+                foreach (var original in draft.Original) { var server=baseline.FirstOrDefault(x=>x.Id==original.Id); baseline.RemoveAll(x => x.Id == original.Id); baseline.Add(server is not null && Equal(server,original) ? server : original); }
                 foreach (var grade in draft.Changed) { snapshot.Grades.RemoveAll(x => x.Id == grade.Id); snapshot.Grades.Add(grade); }
             }
         }

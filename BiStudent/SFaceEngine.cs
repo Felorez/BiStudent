@@ -24,6 +24,9 @@ internal sealed class FaceEngine : IDisposable
     // and a margin between different students reduce accidental attendance marks.
     public const double MatchThreshold = 0.43;
     public const double MinimumMargin = 0.06;
+    // Below this size identity features are too poorly sampled. Still draw the
+    // detection so a user can distinguish a distant face from no detection.
+    public const int MinimumRecognitionSize = 36;
 
     public FaceEngine()
     {
@@ -58,10 +61,10 @@ internal sealed class FaceEngine : IDisposable
         for (var row = 0; row < rows; row++)
         {
             var bounds = Bounds(faces, row, frame.Width, frame.Height);
-            if (bounds.Width < 65 || bounds.Height < 65) continue;
+            if (bounds.Width < 16 || bounds.Height < 16) continue;
             int? id = null;
             double best = 0;
-            if (enrolled.Count > 0)
+            if (enrolled.Count > 0 && bounds.Width >= MinimumRecognitionSize && bounds.Height >= MinimumRecognitionSize)
             {
                 using var aligned = Align(frame, faces, row);
                 var vector = Feature(aligned);
@@ -114,7 +117,9 @@ internal sealed class FaceEngine : IDisposable
         if (detector is null || detectorSize != size)
         {
             detector?.Dispose();
-            detector = FaceDetectorYN.Create(detectionModel, "", size, 0.85f);
+            // Detection confidence is distinct from the identity threshold.
+            // Small faces often have lower detection confidence in YuNet.
+            detector = FaceDetectorYN.Create(detectionModel, "", size, 0.70f);
             detectorSize = size;
         }
         var faces = new Mat();
@@ -159,7 +164,7 @@ internal sealed class FaceEngine : IDisposable
         transform.Set(0, 0, a); transform.Set(0, 1, -b); transform.Set(0, 2, dstX - a * srcX + b * srcY);
         transform.Set(1, 0, b); transform.Set(1, 1, a); transform.Set(1, 2, dstY - b * srcX - a * srcY);
         var aligned = new Mat();
-        Cv2.WarpAffine(frame, aligned, transform, new OpenCvSharp.Size(112, 112));
+        Cv2.WarpAffine(frame, aligned, transform, new OpenCvSharp.Size(112, 112), InterpolationFlags.Cubic);
         return aligned;
     }
 

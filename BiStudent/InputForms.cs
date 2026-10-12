@@ -82,10 +82,23 @@ internal sealed class EnrollmentForm : Form
         feedback.Dock = DockStyle.Fill; bottom.Controls.Add(feedback, 0, 0);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background };
         var cancel = new ModernButton { Text = "Отмена", Width = 110 };
+        var cameraChoice = new ModernButton { Text = "Выбор камеры",Width=145 };
+        cameraChoice.Click += async (_,_) => {
+            using var choice = new CameraSelectionForm(); if (choice.ShowDialog(this)!=DialogResult.OK || closing) return;
+            cameraChoice.Enabled=false; timer.Stop(); captureButton.Enabled=save.Enabled=false;
+            loader.Text="Переключаем камеру…"; loader.Visible=true;
+            if (opening is not null) await opening;
+            while (reading || processingSample) await Task.Delay(20);
+            if (closing) return;
+            capture?.Dispose(); capture=null; engine?.Dispose(); engine=null; latestFrame?.Dispose(); latestFrame=null; latestFace=null;
+            var old=preview.Image; preview.Image=null; old?.Dispose();
+            opening=OpenCameraAsync(); await opening;
+            if (!closing) { cameraChoice.Enabled=true; save.Enabled=samples.Count==3; }
+        };
         captureButton.Click += async (_, _) => await CaptureSampleAsync();
         save.Click += (_, _) => Save();
         cancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-        actions.Controls.Add(captureButton); actions.Controls.Add(save); actions.Controls.Add(cancel);
+        actions.Controls.Add(captureButton); actions.Controls.Add(save); actions.Controls.Add(cancel); actions.Controls.Add(cameraChoice);
         bottom.Controls.Add(actions, 0, 1); layout.Controls.Add(bottom, 0, 6);
         Controls.Add(layout);
         timer.Tick += (_, _) => ReadFrame();

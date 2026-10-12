@@ -40,6 +40,7 @@ internal static class FeatureChecks
         CheckAuthAsync().GetAwaiter().GetResult();
         CacheChecks.RunAsync(directory).GetAwaiter().GetResult();
         AttendanceChecks.RunAsync(directory).GetAwaiter().GetResult();
+        DeviceFaceChecks.RunAsync(directory).GetAwaiter().GetResult();
         CheckStarterData(directory);
     }
 

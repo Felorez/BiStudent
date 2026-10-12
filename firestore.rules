@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function teacher() {
-      return request.auth != null && request.auth.uid == '2iZhLx4u44deMw6jHOLVXgIVRcK2';
+      return request.auth != null && request.auth.uid == '2dYmMQeP5waTH1UL6yBZIwlvZUg2';
     }
     match /publicStats/23-po-103-4r-2 {
       allow get: if true;
@@ -12,6 +12,26 @@ service cloud.firestore {
       allow read, create, update: if teacher();
       match /students/{studentId} {
         allow read, create, update: if teacher();
+      }
+      match /faces/{studentId} {
+        allow read: if teacher();
+        allow create, update: if teacher()
+          && request.resource.data.studentId == studentId
+          && request.resource.data.payload is string
+          && request.resource.data.payload.size() < 800000;
+      }
+      match /faceInvites/{code} {
+        allow get: if teacher() || (resource.data.active == 1 && request.time < resource.data.expiresAt);
+        allow list, create, update: if teacher();
+      }
+      match /faceSubmissions/{code} {
+        allow read, update, delete: if teacher();
+        allow create: if request.resource.data.keys().hasOnly(['studentId', 'payload'])
+          && request.resource.data.studentId == get(/databases/$(database)/documents/groups/23-po-103-4r-2/faceInvites/$(code)).data.studentId
+          && get(/databases/$(database)/documents/groups/23-po-103-4r-2/faceInvites/$(code)).data.active == 1
+          && request.time < get(/databases/$(database)/documents/groups/23-po-103-4r-2/faceInvites/$(code)).data.expiresAt
+          && request.resource.data.payload is string
+          && request.resource.data.payload.size() < 800000;
       }
       match /attendance/{recordId} {
         allow read: if teacher();

@@ -2,7 +2,7 @@ namespace BiStudent;
 
 internal sealed class LoadingForm : Form
 {
-    public LoadingForm(CloudWorkspace workspace)
+    public LoadingForm(CloudWorkspace workspace, Func<Task>? afterLoad = null)
     {
         FormStyle.Dialog(this, "BiStudent · Загрузка", new Size(520, 240));
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 3 };
@@ -13,7 +13,7 @@ internal sealed class LoadingForm : Form
         async Task Load()
         {
             retry.Visible = false; progress.Visible = true;
-            try { await workspace.LoadAsync(); if (!IsDisposed) { DialogResult = DialogResult.OK; Close(); } }
+            try { await workspace.LoadAsync(); if (afterLoad is not null) { label.Text="Синхронизация образцов лиц…"; await afterLoad(); } if (!IsDisposed) { DialogResult = DialogResult.OK; Close(); } }
             catch (Exception ex) { if (!IsDisposed) { label.Text = ex is InvalidOperationException ? ex.Message : "Не удалось загрузить данные. Проверьте интернет."; retry.Visible = true; progress.Visible = false; } }
         }
         Shown += async (_, _) => await Load(); retry.Click += async (_, _) => await Load();

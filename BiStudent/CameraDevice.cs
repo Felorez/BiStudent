@@ -7,16 +7,22 @@ internal static class CameraDevice
     // DirectShow avoids the slow Media Foundation negotiation on many Windows laptops.
     public static VideoCapture Open(CancellationToken token)
     {
-        foreach (var api in new[] { VideoCaptureAPIs.DSHOW, VideoCaptureAPIs.MSMF })
+        var choices = CameraCatalog.List(); var selected = CameraCatalog.Preferred(choices);
+        if (selected is null) throw new InvalidOperationException("Камеры не найдены. Подключите веб-камеру.");
+        // Enumeration is DirectShow: never silently open a different MSMF index.
+        foreach (var api in new[] { VideoCaptureAPIs.DSHOW })
         {
             token.ThrowIfCancellationRequested();
             var camera = new VideoCapture();
             try
             {
-                if (camera.Open(0, api))
+                if (camera.Open(selected.Index, api))
                 {
-                    camera.Set(VideoCaptureProperties.FrameWidth, 640);
-                    camera.Set(VideoCaptureProperties.FrameHeight, 480);
+                    // Keep detail for faces across the classroom. Unsupported modes
+                    // are negotiated by DirectShow without probing/opening again.
+                    camera.Set(VideoCaptureProperties.FourCC, VideoWriter.FourCC('M', 'J', 'P', 'G'));
+                    camera.Set(VideoCaptureProperties.FrameWidth, 1280);
+                    camera.Set(VideoCaptureProperties.FrameHeight, 720);
                     token.ThrowIfCancellationRequested();
                     return camera;
                 }

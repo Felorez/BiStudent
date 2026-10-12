@@ -70,11 +70,19 @@ internal sealed class AttendanceStore
     public int RenameTeacher(string uid, string name)
     {
         using var connection = Open(); using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE grades SET teacher_name=$name WHERE teacher_uid=$uid AND teacher_name IN ('Марал Апай','Марал')";
+        command.CommandText = "UPDATE grades SET teacher_name=$name WHERE teacher_uid=$uid AND teacher_name IN ('Марал Апай','Марал','Мадина Апай')";
         command.Parameters.AddWithValue("$name", name); command.Parameters.AddWithValue("$uid", uid);
         return command.ExecuteNonQuery();
     }
     private readonly string connectionString;
+    public void MigrateTeacher(string oldUid,string newUid,string name)
+    {
+        using var connection=Open(); using var command=connection.CreateCommand();
+        command.CommandText="UPDATE grades SET teacher_uid=$new,teacher_name=$name WHERE teacher_uid=$old";
+        command.Parameters.AddWithValue("$new",newUid); command.Parameters.AddWithValue("$old",oldUid); command.Parameters.AddWithValue("$name",name); command.ExecuteNonQuery();
+        var oldDraft=Path.Combine(directory,"pending-grades-"+oldUid+".json"); var newDraft=Path.Combine(directory,"pending-grades-"+newUid+".json");
+        if (File.Exists(oldDraft) && !File.Exists(newDraft)) File.Copy(oldDraft,newDraft);
+    }
     private readonly string directory;
 
     public AttendanceStore(string? dataDirectory = null)

@@ -15,7 +15,8 @@ internal sealed class FirebaseSettings
     public string ProjectId { get; set; } = "";
     public string TeacherEmail { get; set; } = "";
     public string TeacherUid { get; set; } = "";
-    public string TeacherName { get; set; } = "Мадина Апай";
+    public string PreviousTeacherUid { get; set; } = "";
+    public string TeacherName { get; set; } = "Ниязова Мадина Ержанкызы";
     public bool UseCloudData { get; set; }
     public string GroupId { get; set; } = "23-po-103-4r-2";
     public string GroupName { get; set; } = "23-ПО-103-4р-2";
@@ -28,6 +29,14 @@ internal sealed class FirebaseSettings
 
 internal sealed class FirebaseAuth(FirebaseSettings settings, HttpClient http)
 {
+    public async Task<TeacherSession> RestoreAsync(string refreshToken, CancellationToken cancellationToken = default)
+    {
+        using var response = await http.PostAsync("https://securetoken.googleapis.com/v1/token?key=" + Uri.EscapeDataString(settings.ApiKey), new FormUrlEncodedContent(new Dictionary<string,string> { ["grant_type"]="refresh_token", ["refresh_token"]=refreshToken }),cancellationToken);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException("Сохранённый вход завершён. Введите пароль заново.");
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken)); var root = json.RootElement;
+        if (root.GetProperty("user_id").GetString() != settings.TeacherUid) throw new InvalidOperationException("У сохранённой учётной записи нет доступа.");
+        return new TeacherSession(settings.TeacherUid,settings.TeacherEmail,settings.TeacherName,root.GetProperty("id_token").GetString()!,root.GetProperty("refresh_token").GetString()!,DateTimeOffset.UtcNow.AddSeconds(int.Parse(root.GetProperty("expires_in").GetString()!)));
+    }
     public async Task<TeacherSession> SignInAsync(string password, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(settings.TeacherUid) || string.IsNullOrWhiteSpace(settings.ApiKey))
