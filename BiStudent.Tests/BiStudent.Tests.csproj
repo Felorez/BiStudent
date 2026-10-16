@@ -8,6 +8,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.12.0" />
     <PackageReference Include="xunit.v3" Version="4.0.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
@@ -16,5 +17,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\BiStudent.Server\BiStudent.Server.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Официальные портреты NASA (общественное достояние) для проверки распознавания лиц, см. Fixtures/Faces/README.md -->
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

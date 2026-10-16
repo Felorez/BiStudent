@@ -30,7 +30,13 @@ Write-Host 'Сборка решения…'
 dotnet build (Join-Path $root 'BiStudent.slnx') -c Release -v q | Out-Host
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if ($Demo) { $env:Demo__Enabled = 'true' } else { Remove-Item Env:Demo__Enabled -ErrorAction SilentlyContinue }
+if ($Demo) {
+    $env:Demo__Enabled = 'true'
+    # Реальное расписание и списки групп (seed/schedule.local.xlsx, seed/students.local.csv) подключаются, если лежат рядом.
+    $env:Demo__UseLocalSchedule = 'true'
+} else {
+    Remove-Item Env:Demo__Enabled, Env:Demo__UseLocalSchedule -ErrorAction SilentlyContinue
+}
 
 Write-Host "Запуск сервера на порту $port…"
 $serverProcess = Start-Process dotnet -ArgumentList @('run', '--project', $server, '-c', 'Release', '--no-build', '--no-launch-profile', '--urls', "http://0.0.0.0:$port") `

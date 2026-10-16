@@ -12,12 +12,12 @@ internal sealed class SchedulePage : Page
     private readonly ModernButton previous = new() { Text = "‹", Width = 42 };
     private readonly ModernButton next = new() { Text = "›", Width = 42 };
     private readonly ModernButton today = new() { Text = "Сегодня", Width = 104 };
-    private readonly ModernButton import = new() { Text = "Импорт CSV", Width = 142 };
+    private readonly ModernButton import = new() { Text = "Импорт", Width = 120 };
     private readonly ModernButton add = new() { Text = "+ Пара", Primary = true, Width = 112 };
     private List<LessonDto> lessons = [];
     private bool busy;
 
-    public SchedulePage(ApiClient api) : base(api, "Расписание", "Шаблон недели на семестр — дальше пары, журнал и отметки создаются сами")
+    public SchedulePage(ApiClient api) : base(api, "Расписание", "Занятия на семестр: еженедельные, по чётным и нечётным неделям, разовые и отменённые")
     {
         Actions.Controls.Add(import); Actions.Controls.Add(add);
         import.Click += async (_, _) => await ExecuteAsync(ImportAsync);
@@ -25,7 +25,7 @@ internal sealed class SchedulePage : Page
         previous.Click += async (_, _) => await MoveAsync(-7);
         next.Click += async (_, _) => await MoveAsync(7);
         today.Click += async (_, _) => { monday = UiFormat.Monday(DateOnly.FromDateTime(DateTime.Today)); await LoadAsync(); };
-        var hint = new AutomationHint("расписание вводится один раз — чётные и нечётные недели, отмены и разовые занятия учитываются автоматически, журнал создаётся из него сам");
+        var hint = new AutomationHint("расписание колледжа загружается из Excel («Импорт»), журнал строится по занятиям расписания");
         var navigation = new TableLayoutPanel { Dock = DockStyle.Top, Height = 70, ColumnCount = 5, BackColor = Theme.Background, Padding = new Padding(0, 14, 0, 12) };
         navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52)); navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52)); navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 114)); navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         range.TextAlign = ContentAlignment.MiddleCenter; parity.TextAlign = ContentAlignment.MiddleRight;
@@ -137,8 +137,11 @@ internal sealed class SchedulePage : Page
 
     private async Task ImportAsync()
     {
-        using var guide = new DialogShell("Импорт расписания", 620, 300);
-        guide.Content.Controls.Add(Ui.Label("CSV: День;Начало;Конец;Предмет;Группа;Аудитория;Неделя\nОдна строка — один шаблон пары. Сохраните образец и заполните его в Excel.", 10, Theme.Text));
+        using var guide = new DialogShell("Импорт расписания", 680, 330);
+        guide.Content.Controls.Add(Ui.Label(
+            "Excel — расписание колледжа на семестр (блоки «день · звонок · пара · аудитория · группа»). " +
+            "Вы выберете группы, а учётные записи преподавателей создадутся автоматически (нужны права администратора).\n\n" +
+            "CSV: День;Начало;Конец;Предмет;Группа;Аудитория;Неделя — одна строка на шаблон пары.", 10, Theme.Text));
         var template = new ModernButton { Text = "Сохранить шаблон…", Width = 180, Height = 40 };
         template.Click += async (_, _) =>
         {
@@ -156,8 +159,12 @@ internal sealed class SchedulePage : Page
             }
         };
         guide.Buttons.Controls.Add(template);
-        guide.AddButton("Выбрать CSV…", DialogResult.OK, true); guide.AddButton("Отмена", DialogResult.Cancel);
-        if (guide.ShowDialog(FindForm()) != DialogResult.OK) return;
+        guide.AddButton("Отмена", DialogResult.Cancel);
+        guide.AddButton("Выбрать CSV…", DialogResult.OK);
+        guide.AddButton("Расписание Excel…", DialogResult.Yes, true);
+        var choice = guide.ShowDialog(FindForm());
+        if (choice == DialogResult.Yes) { await ImportExcelAsync(); return; }
+        if (choice != DialogResult.OK) return;
         using var open = new OpenFileDialog { Filter = "CSV (*.csv)|*.csv", CheckFileExists = true };
         if (open.ShowDialog(FindForm()) != DialogResult.OK) return;
         string content;
@@ -170,6 +177,26 @@ internal sealed class SchedulePage : Page
         var result = await Api.ImportScheduleAsync(content);
         if (result.Errors.Count > 0) Ui.Message(FindForm(), "Ошибки импорта", string.Join(Environment.NewLine, result.Errors));
         else Ui.Toast(this, $"Добавлено {result.Added} {UiFormat.Plural(result.Added, "пара", "пары", "пар")}");
+        await RefreshAsync();
+    }
+
+    private async Task ImportExcelAsync()
+    {
+        using var open = new OpenFileDialog { Title = "Расписание колледжа", Filter = "Excel (*.xlsx)|*.xlsx", CheckFileExists = true };
+        if (open.ShowDialog(FindForm()) != DialogResult.OK) return;
+        byte[] file;
+        try { file = await File.ReadAllBytesAsync(open.FileName); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!IsDisposed) Ui.Toast(this, $"Не удалось прочитать файл: {ex.Message}", true);
+            return;
+        }
+        var preview = await Api.PreviewScheduleXlsxAsync(file);
+        if (IsDisposed) return;
+        if (preview.Groups.Count == 0) { Ui.Message(FindForm(), "Импорт расписания", "В файле не найдено групп в формате расписания колледжа."); return; }
+        using var dialog = new ScheduleImportDialog(Api, file, preview);
+        if (dialog.ShowDialog(FindForm()) != DialogResult.OK || dialog.Result is not { } result) return;
+        ScheduleImportDialog.ShowResult(FindForm(), result);
         await RefreshAsync();
     }
 

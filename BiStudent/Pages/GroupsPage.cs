@@ -24,7 +24,7 @@ internal sealed class GroupsPage : Page
 
     public GroupsPage(ApiClient api) : base(api, "Группы", "Списки групп и регистрация лиц студентов")
     {
-        var import = new ModernButton { Text = "Импорт CSV", Width = 140 };
+        var import = new ModernButton { Text = "Импорт списков", Width = 140 };
         var code = new ModernButton { Text = "Код регистрации", Width = 185 };
         var addGroup = new ModernButton { Text = "+ Группа", Width = 130 };
         var addStudent = new ModernButton { Text = "+ Студент", Width = 140, Primary = true };
@@ -212,12 +212,16 @@ internal sealed class GroupsPage : Page
 
     private async Task ImportAsync()
     {
-        using var dialog = new OpenFileDialog { Title = "Импорт студентов", Filter = "CSV (*.csv)|*.csv|Все файлы (*.*)|*.*" };
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Импорт списков групп",
+            Filter = "Журнал Excel или CSV (*.xlsx;*.csv)|*.xlsx;*.csv|Журнал Excel (*.xlsx)|*.xlsx|CSV «ФИО;Группа» (*.csv)|*.csv"
+        };
         if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
         await RunAsync(async () =>
         {
-            var csv = await File.ReadAllTextAsync(dialog.FileName, Encoding.UTF8);
-            var result = await Api.ImportStudentsAsync(csv);
+            var file = await File.ReadAllBytesAsync(dialog.FileName);
+            var result = await Api.ImportStudentsAsync(file);
             await ReloadAsync();
             Ui.Toast(this, $"Добавлено {result.Added}, пропущено дубликатов {result.Skipped}");
             if (result.Errors.Count > 0) Ui.Message(FindForm(), "Ошибки импорта", string.Join(Environment.NewLine, result.Errors));

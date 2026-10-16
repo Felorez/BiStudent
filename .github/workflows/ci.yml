@@ -17,6 +17,11 @@ jobs:
       - run: dotnet restore BiStudent.slnx
       - run: dotnet build BiStudent.slnx -c Release --no-restore -warnaserror
       - run: dotnet test --solution BiStudent.slnx -c Release --no-build
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Registration site tests
+        run: node --test tests/site/register.test.cjs
       - name: Desktop self-test
         shell: pwsh
         run: |

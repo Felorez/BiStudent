@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace BiStudent.Server.Services;
 
 public sealed class SeedService(AppDbContext db, IConfiguration configuration, IWebHostEnvironment environment,
-    IPasswordHasher<Teacher> hasher, ScheduleService schedule, ILogger<SeedService> logger)
+    IPasswordHasher<Teacher> hasher, ScheduleService schedule, ScheduleImportService importer, ILogger<SeedService> logger)
 {
     public async Task SeedAsync()
     {
@@ -54,6 +54,53 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
         await db.SaveChangesAsync();
 
         var start = DateOnly.Parse(configuration["Semester:Start"] ?? "2026-09-01", CultureInfo.InvariantCulture);
+        var teacherIds = new List<int> { teacher.Id };
+        if (await ImportLocalScheduleAsync(teacher) is { } imported)
+        {
+            teacher = imported.Main;
+            teacherIds = imported.Teachers;
+        }
+        else await AddDemoScheduleAsync(teacher, start);
+        await AddHistoryAsync(teacherIds, start);
+    }
+
+    /// Реальное расписание колледжа для демо (seed/schedule.local.xlsx, в git не хранится): занятия групп из списка студентов.
+    /// Демо-вход получает преподаватель с наибольшей нагрузкой.
+    private async Task<(Teacher Main, List<int> Teachers)?> ImportLocalScheduleAsync(Teacher placeholder)
+    {
+        if (!configuration.GetValue("Demo:UseLocalSchedule", false)) return null;
+        var path = new[] {
+            Path.Combine(environment.ContentRootPath, "seed", "schedule.local.xlsx"),
+            Path.Combine(AppContext.BaseDirectory, "seed", "schedule.local.xlsx")
+        }.FirstOrDefault(File.Exists);
+        if (path is null) return null;
+        var bytes = await File.ReadAllBytesAsync(path);
+        var preview = await importer.PreviewAsync(new MemoryStream(bytes));
+        var groups = preview.Groups.Where(x => x.Exists).Select(x => x.Group).ToList();
+        if (groups.Count == 0)
+        {
+            logger.LogWarning("В seed/schedule.local.xlsx нет групп из списка студентов — используется демонстрационное расписание.");
+            return null;
+        }
+        await importer.ImportAsync(new MemoryStream(bytes), groups);
+        var load = await db.ScheduleSlots.AsNoTracking().GroupBy(x => x.TeacherId)
+            .Select(x => new { TeacherId = x.Key, Count = x.Count() }).ToListAsync();
+        var active = await db.Teachers.Where(x => x.IsActive && x.Id != placeholder.Id).ToListAsync();
+        var main = active.OrderByDescending(t => load.FirstOrDefault(x => x.TeacherId == t.Id)?.Count ?? 0).First();
+        db.Teachers.Remove(placeholder);
+        await db.SaveChangesAsync();
+        main.Login = placeholder.Login;
+        main.IsAdmin = true;
+        main.MustChangePassword = false;
+        main.PasswordHash = hasher.HashPassword(main, configuration["Demo:Password"] ?? "teacher123");
+        await db.SaveChangesAsync();
+        logger.LogInformation("Демо: импортировано расписание групп {Groups}; вход «{Login}» — {Teacher}.",
+            string.Join(", ", groups), main.Login, main.FullName);
+        return (main, load.Select(x => x.TeacherId).ToList());
+    }
+
+    private async Task AddDemoScheduleAsync(Teacher teacher, DateOnly start)
+    {
         var subjects = new[] { "Базы данных", "DevOps", "Веб-программирование", "Алгоритмы", "Английский язык", "Компьютерные сети" };
         var bells = new[] { (new TimeOnly(8, 30), new TimeOnly(9, 50)), (new TimeOnly(10, 0), new TimeOnly(11, 20)),
             (new TimeOnly(11, 30), new TimeOnly(12, 50)), (new TimeOnly(13, 20), new TimeOnly(14, 40)),
@@ -77,12 +124,17 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
             }
         }
         await db.SaveChangesAsync();
+    }
+
+    private async Task AddHistoryAsync(List<int> teacherIds, DateOnly start)
+    {
         var yesterday = DateOnly.FromDateTime(DateTime.Now).AddDays(-1);
         var first = yesterday.AddDays(-27);
         if (first < start) first = start;
         var past = new List<LessonOccurrence>();
-        for (var day = first; day <= yesterday; day = day.AddDays(1))
-            past.AddRange(await schedule.ForDayAsync(teacher.Id, day));
+        foreach (var teacherId in teacherIds)
+            for (var day = first; day <= yesterday; day = day.AddDays(1))
+                past.AddRange(await schedule.ForDayAsync(teacherId, day));
         var cancelled = past.FirstOrDefault();
         if (cancelled is not null)
         {
@@ -122,8 +174,8 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
             }
         }
         var assessments = await db.ScheduleSlots.AsNoTracking()
-            .Where(x => x.TeacherId == teacher.Id)
-            .Select(x => new { x.GroupId, x.Subject }).Distinct().ToListAsync();
+            .Where(x => teacherIds.Contains(x.TeacherId))
+            .Select(x => new { x.TeacherId, x.GroupId, x.Subject }).Distinct().ToListAsync();
         foreach (var pair in assessments)
         {
             foreach (var (date, title, kind) in new[] {
@@ -133,7 +185,7 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
             {
                 if (date < start) continue;
                 var assessment = new Assessment {
-                    TeacherId = teacher.Id, GroupId = pair.GroupId, Subject = pair.Subject,
+                    TeacherId = pair.TeacherId, GroupId = pair.GroupId, Subject = pair.Subject,
                     Title = title, Kind = kind, Date = date
                 };
                 db.Assessments.Add(assessment);

@@ -73,6 +73,7 @@ builder.Services.AddScoped<SeedService>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<EnrollmentService>();
 builder.Services.AddScoped<GradeService>();
+builder.Services.AddScoped<ScheduleImportService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AttendanceNotifier>();
 builder.Services.AddSingleton<RecognitionService>();

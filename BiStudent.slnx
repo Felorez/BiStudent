@@ -3,4 +3,5 @@
   <Project Path="BiStudent/BiStudent.csproj" />
   <Project Path="BiStudent.Server/BiStudent.Server.csproj" />
   <Project Path="BiStudent.Tests/BiStudent.Tests.csproj" />
+  <Project Path="BiStudent.Client.Tests/BiStudent.Client.Tests.csproj" />
 </Solution>

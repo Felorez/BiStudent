@@ -24,5 +24,6 @@
   <ItemGroup>
     <Content Include="seed\students.demo.csv" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="seed\students.local.csv" Condition="Exists('seed\students.local.csv')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
+    <Content Include="seed\schedule.local.xlsx" Condition="Exists('seed\schedule.local.xlsx')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
   </ItemGroup>
 </Project>

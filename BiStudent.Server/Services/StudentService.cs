@@ -1,4 +1,5 @@
 using BiStudent.Contracts;
+using ClosedXML.Excel;
 using BiStudent.Server.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -79,6 +80,54 @@ public sealed class StudentService(AppDbContext db, RecognitionService recogniti
         db.Students.Remove(student);
         await db.SaveChangesAsync();
         recognition.Invalidate();
+    }
+
+    /// Список группы из CSV («ФИО;Группа») или из журнала Excel: каждый лист — группа (имя листа), ФИО — в колонке с заголовком «ФИО».
+    public async Task<ImportResultDto> ImportAsync(Stream content)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer);
+        buffer.Position = 0;
+        if (buffer.Length < 2 || buffer.GetBuffer()[0] != (byte)'P' || buffer.GetBuffer()[1] != (byte)'K')
+        {
+            var (added, skipped) = await ImportCsvAsync(buffer);
+            return new ImportResultDto(added, skipped, []);
+        }
+        XLWorkbook workbook;
+        try { workbook = new XLWorkbook(buffer); }
+        catch (Exception ex) { throw new InvalidOperationException("Не удалось прочитать файл Excel.", ex); }
+        using (workbook)
+        {
+            int totalAdded = 0, totalSkipped = 0;
+            var errors = new List<string>();
+            foreach (var sheet in workbook.Worksheets)
+            {
+                var group = System.Text.RegularExpressions.Regex.Replace(sheet.Name, @"\s+", " ").Trim();
+                var used = sheet.RangeUsed();
+                if (used is null || group.Length == 0) continue;
+                var header = used.CellsUsed().FirstOrDefault(c => c.Address.RowNumber <= 15 &&
+                    c.GetFormattedString().Trim().Equals("ФИО", StringComparison.OrdinalIgnoreCase));
+                if (header is null) { errors.Add($"Лист «{sheet.Name}»: нет колонки «ФИО»."); continue; }
+                var names = new List<string>();
+                for (var row = header.Address.RowNumber + 1; row <= used.LastRow().RowNumber(); row++)
+                {
+                    var name = System.Text.RegularExpressions.Regex.Replace(sheet.Cell(row, header.Address.ColumnNumber).GetFormattedString(), @"\s+", " ").Trim();
+                    // Служебные строки вроде «куратор: …» и пустые строки пропускаются.
+                    if (name.Length < 3 || name.Contains(':')) continue;
+                    names.Add(name);
+                }
+                if (names.Count == 0) { errors.Add($"Лист «{sheet.Name}»: список студентов пуст."); continue; }
+                var target = await db.Groups.SingleOrDefaultAsync(x => x.Name == group) ?? await AddGroupAsync(group);
+                foreach (var name in names.Distinct())
+                {
+                    if (await db.Students.AnyAsync(x => x.GroupId == target.Id && x.FullName == name)) { totalSkipped++; continue; }
+                    db.Students.Add(new Student { GroupId = target.Id, FullName = name });
+                    totalAdded++;
+                }
+                await db.SaveChangesAsync();
+            }
+            return new ImportResultDto(totalAdded, totalSkipped, errors);
+        }
     }
 
     public async Task<(int Added, int Skipped)> ImportCsvAsync(Stream csv)

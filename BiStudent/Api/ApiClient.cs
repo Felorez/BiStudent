@@ -44,13 +44,16 @@ internal sealed class ApiClient : IDisposable
 
     public ApiClient() : this(ClientSettings.Load()) { }
 
-    public ApiClient(ClientSettings settings)
+    public ApiClient(ClientSettings settings) : this(settings, null) { }
+
+    // handler подменяется в тестах, в приложении используется обычный HttpClientHandler.
+    internal ApiClient(ClientSettings settings, HttpMessageHandler? handler)
     {
         var address = settings.ServerUrl?.Trim();
         if (string.IsNullOrWhiteSpace(address) || !Uri.TryCreate(address.TrimEnd('/') + "/", UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             throw new ApiException(null, "Неверный адрес сервера.");
-        _http = new HttpClient { BaseAddress = uri, Timeout = Timeout.InfiniteTimeSpan };
+        _http = new HttpClient(handler ?? new HttpClientHandler()) { BaseAddress = uri, Timeout = Timeout.InfiniteTimeSpan };
         _uiContext = SynchronizationContext.Current;
     }
 
@@ -149,6 +152,21 @@ internal sealed class ApiClient : IDisposable
     public Task DeleteStudentAsync(int id) => RequestAsync(HttpMethod.Delete, $"api/students/{id}");
     public Task<ImportResultDto> ImportStudentsAsync(string csv) =>
         RequestAsync<ImportResultDto>(HttpMethod.Post, "api/students/import", new StringContent(csv, Encoding.UTF8, "text/csv"));
+    // Файл списка как есть: CSV или журнал Excel (.xlsx), формат сервер определяет сам.
+    public Task<ImportResultDto> ImportStudentsAsync(byte[] file) =>
+        RequestAsync<ImportResultDto>(HttpMethod.Post, "api/students/import", Binary(file), timeout: LongTimeout);
+    public Task<ScheduleImportPreviewDto> PreviewScheduleXlsxAsync(byte[] xlsx) =>
+        RequestAsync<ScheduleImportPreviewDto>(HttpMethod.Post, "api/schedule/import-xlsx/preview", Binary(xlsx), timeout: LongTimeout);
+    public Task<ScheduleImportResultDto> ImportScheduleXlsxAsync(byte[] xlsx, IEnumerable<string> groups) =>
+        RequestAsync<ScheduleImportResultDto>(HttpMethod.Post,
+            "api/schedule/import-xlsx?" + string.Join("&", groups.Select(g => "groups=" + Uri.EscapeDataString(g))), Binary(xlsx), timeout: LongTimeout);
+
+    private static ByteArrayContent Binary(byte[] bytes)
+    {
+        var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        return content;
+    }
     public Task<EnrollResultDto> EnrollAsync(int studentId, List<byte[]> images, bool allowSimilar = false) =>
         RequestAsync<EnrollResultDto>(HttpMethod.Post, $"api/students/{studentId}/enroll", Json(new EnrollRequest(images, allowSimilar)), timeout: LongTimeout);
 

@@ -294,7 +294,7 @@ internal sealed class AutomationHint : SmoothPanel
         Padding = new Padding(16, 0, 16, 0);
         BackColor = Theme.Mix(Theme.Background, Theme.Accent, .14f);
         BorderColor = Color.FromArgb(120, Theme.Accent);
-        var label = Ui.Label($"⚡  Автоматизация: {text}", 9.5f, Theme.Text);
+        var label = Ui.Label($"ⓘ  {char.ToUpper(text[0])}{text[1..]}", 9.5f, Theme.Text);
         label.AutoEllipsis = true;
         Controls.Add(label);
     }
@@ -516,7 +516,7 @@ internal static class Ui
     }
 }
 
-internal sealed class DialogShell : DarkForm
+internal class DialogShell : DarkForm
 {
     private readonly FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 58, FlowDirection = FlowDirection.RightToLeft, BackColor = Theme.Background, Padding = new Padding(16, 8, 6, 8) };
     public Panel Content { get; } = new() { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(24, 8, 24, 8) };

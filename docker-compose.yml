@@ -12,7 +12,7 @@ services:
       # Demo__Enabled: "true"
       Automation__SecondsPerManualMark: "6"
       Automation__MinutesPerManualReport: "20"
-      Semester__Start: "2026-09-01"
+      Semester__Start: "2026-08-31"
     volumes:
       - bistudent-data:/data
       # Реальный список группы (ФИО;Группа) подключается только локально и не попадает в образ:

@@ -7,7 +7,8 @@ namespace BiStudent;
 internal sealed class ClientSettings
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-    private static readonly string FilePath = Path.Combine(
+    // Тесты перенаправляют настройки во временный файл, чтобы не трогать настоящий client.json.
+    internal static string FilePath { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BiStudent", "client.json");
     private static readonly byte[] TokenEntropy = Encoding.UTF8.GetBytes("BiStudent.Refresh");
 

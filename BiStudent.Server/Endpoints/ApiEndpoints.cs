@@ -53,6 +53,12 @@ public static class ApiEndpoints
             await service.RestoreAsync(id, request.Date);
             return Results.NoContent();
         });
+        // Расписание колледжа из Excel: предпросмотр доступен всем, импорт создаёт учётные записи — только администратору.
+        schedule.MapPost("/import-xlsx/preview", async (HttpRequest request, ScheduleImportService import) =>
+            await import.PreviewAsync(await BufferAsync(request))).WithMetadata(new RequestSizeLimitAttribute(20 * 1024 * 1024));
+        schedule.MapPost("/import-xlsx", async (HttpRequest request, [FromQuery] string[]? groups, ScheduleImportService import) =>
+            await import.ImportAsync(await BufferAsync(request), groups ?? []))
+            .RequireAuthorization("Admin").WithMetadata(new RequestSizeLimitAttribute(20 * 1024 * 1024));
         schedule.MapPost("/import", async (HttpRequest request, ClaimsPrincipal user, ScheduleService service) =>
         {
             using var body = new MemoryStream();
@@ -109,14 +115,8 @@ public static class ApiEndpoints
             await service.DeleteStudentAsync(id);
             return Results.NoContent();
         });
-        students.MapPost("/import", async (HttpRequest request, StudentService service) =>
-        {
-            using var body = new MemoryStream();
-            await request.Body.CopyToAsync(body);
-            body.Position = 0;
-            var (added, skipped) = await service.ImportCsvAsync(body);
-            return new ImportResultDto(added, skipped, []);
-        });
+        students.MapPost("/import", async (HttpRequest request, StudentService service) => await service.ImportAsync(request.Body))
+            .WithMetadata(new RequestSizeLimitAttribute(10 * 1024 * 1024));
         students.MapPost("/{id:int}/enroll", async (int id, EnrollRequest request, RecognitionService recognition) =>
             await recognition.EnrollAsync(id, request.Images, request.AllowSimilar)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
 
@@ -285,6 +285,14 @@ public static class ApiEndpoints
         matrix.Students.Select(s => new JournalStudentDto(s.StudentId, s.FullName,
             s.Cells.Select(c => new JournalCellDto(c.Status, c.Reason, c.Comment, c.Score)).ToList(),
             s.Present, s.Absent, s.Excused, s.MissedHours, s.ExcusedHours, s.Percent, s.Average, s.Final)).ToList());
+
+    private static async Task<MemoryStream> BufferAsync(HttpRequest request)
+    {
+        var buffer = new MemoryStream();
+        await request.Body.CopyToAsync(buffer);
+        buffer.Position = 0;
+        return buffer;
+    }
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
