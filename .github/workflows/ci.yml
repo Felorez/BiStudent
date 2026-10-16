@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build-test:
@@ -46,7 +47,7 @@ jobs:
   publish:
     runs-on: windows-latest
     needs: build-test
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
