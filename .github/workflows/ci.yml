@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-test:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -32,7 +32,7 @@ jobs:
           if ($p.ExitCode -ne 0 -or (Get-Content $result) -ne 'OK') { Get-Content (Join-Path $exe.DirectoryName 'self-test-error.txt') -ErrorAction SilentlyContinue; exit 1 }
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-test
     steps:
       - uses: actions/checkout@v5
@@ -45,7 +45,7 @@ jobs:
           exit 1
 
   publish:
-    runs-on: windows-latest
+    runs-on: windows-2025
     needs: build-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
