@@ -114,6 +114,7 @@ public sealed class ApiTests : IDisposable
         {
             builder.UseContentRoot(ServerRoot());
             builder.UseSetting("ConnectionStrings:Default", $"Data Source={Path.Combine(directory, "test.db")};Pooling=False");
+            builder.UseSetting("Demo:Enabled", "true");
         }
 
         private static string ServerRoot()

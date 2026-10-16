@@ -4,8 +4,6 @@ using System.Text;
 using BiStudent.Contracts;
 using BiStudent.Server.Data;
 using BiStudent.Server.Services;
-using Microsoft.AspNetCore.Authentication.BearerToken;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,16 +13,16 @@ public static class ApiEndpoints
 {
     public static void MapApi(this WebApplication app)
     {
-        app.MapPost("/api/auth/login", LoginAsync).AllowAnonymous();
+        app.MapAuth();
 
         var api = app.MapGroup("/api").RequireAuthorization().AddEndpointFilter(HandleErrorsAsync);
-        api.MapGet("/me", async (ClaimsPrincipal user, AppDbContext db) =>
-        {
-            var teacher = await db.Teachers.AsNoTracking().SingleAsync(x => x.Id == TeacherId(user));
-            return new TeacherDto(teacher.Id, teacher.FullName, teacher.Login);
-        });
-        api.MapGet("/settings/automation", (IConfiguration configuration) => Automation(configuration));
+        api.MapGet("/settings/automation", async (IConfiguration configuration, RecognitionService recognition) =>
+            Automation(configuration, (await recognition.GetSettingsAsync()).FramesInRow));
+        api.MapGet("/settings/recognition", (RecognitionService recognition) => recognition.GetSettingsAsync());
+        api.MapPut("/settings/recognition", (RecognitionSettingsDto settings, RecognitionService recognition) => recognition.SaveSettingsAsync(settings))
+            .RequireAuthorization("Admin");
 
+        api.MapGrades();
         api.MapGet("/dashboard", async (ClaimsPrincipal user, StatsService stats, ScheduleService schedule) =>
             await DashboardAsync(TeacherId(user), stats, schedule, DateTime.Now));
         api.MapGet("/report", ReportAsync);
@@ -81,10 +79,16 @@ public static class ApiEndpoints
             await students.DeleteGroupAsync(id);
             return Results.NoContent();
         });
-        groups.MapGet("/{id:int}/students", async (int id, StudentService students) =>
+        groups.MapGet("/{id:int}/students", async (int id, StudentService students, FaceSampleHealth health, AppDbContext db) =>
         {
             var faces = await students.WithFaceAsync(id);
-            return (await students.ForGroupAsync(id)).Select(s => new StudentDto(s.Id, s.FullName, s.GroupId, faces.Contains(s.Id))).ToList();
+            var unreadable = await health.UnreadableStudentsAsync();
+            var pending = await db.FaceSubmissions.AsNoTracking()
+                .Where(x => x.Student.GroupId == id && x.Status == FaceSubmissionStatus.Pending)
+                .Select(x => x.StudentId).Distinct().ToListAsync();
+            return (await students.ForGroupAsync(id))
+                .Select(s => new StudentDto(s.Id, s.FullName, s.GroupId, faces.Contains(s.Id) && !unreadable.Contains(s.Id),
+                    unreadable.Contains(s.Id), pending.Contains(s.Id))).ToList();
         });
 
         var students = api.MapGroup("/students");
@@ -114,19 +118,21 @@ public static class ApiEndpoints
             return new ImportResultDto(added, skipped, []);
         });
         students.MapPost("/{id:int}/enroll", async (int id, EnrollRequest request, RecognitionService recognition) =>
-            await recognition.EnrollAsync(id, request.Images)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
+            await recognition.EnrollAsync(id, request.Images, request.AllowSimilar)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
 
         var lessons = api.MapGroup("/lessons/{slotId:int}/{date}");
         lessons.MapGet("/attendance", async (int slotId, DateOnly date, ClaimsPrincipal user, AppDbContext db, AttendanceService attendance) =>
         {
             await EnsureSlotAsync(db, user, slotId);
             return (await attendance.ForLessonAsync(slotId, date))
-                .Select(r => new AttendanceRowDto(r.StudentId, r.FullName, r.Status, r.Method, r.MarkedAt)).ToList();
+                .Select(r => new AttendanceRowDto(r.StudentId, r.FullName, r.Status, r.Method, r.MarkedAt,
+                    r.Reason, r.Comment, r.HasDocument, r.Score)).ToList();
         });
         lessons.MapPut("/attendance", async (int slotId, DateOnly date, MarkRequest request, ClaimsPrincipal user, AppDbContext db, AttendanceService attendance) =>
         {
             await EnsureSlotAsync(db, user, slotId);
-            if (request.Status is AttendanceStatus status) await attendance.MarkAsync(slotId, date, request.StudentId, status, MarkMethod.Manual);
+            if (request.Status is AttendanceStatus status) await attendance.MarkAsync(slotId, date, request.StudentId,
+                status, MarkMethod.Manual, request.Reason, request.Comment, request.HasDocument);
             else await attendance.ClearAsync(slotId, date, request.StudentId);
             return Results.NoContent();
         });
@@ -149,8 +155,23 @@ public static class ApiEndpoints
             await EnsureSlotAsync(db, user, request.SlotId);
             return await recognition.RecognizeAsync(TeacherId(user), request.SlotId, request.Date, request.Image);
         }).WithMetadata(new RequestSizeLimitAttribute(4 * 1024 * 1024));
-        api.MapGet("/recognition/status", (RecognitionService recognition) =>
-            new EnrollResultDto(recognition.IsAvailable, recognition.Error ?? "Распознавание готово."));
+        api.MapGet("/recognition/status", async (RecognitionService recognition, FaceSampleHealth health) =>
+        {
+            if (!recognition.IsAvailable) return new EnrollResultDto(false, recognition.Error ?? "Распознавание недоступно.");
+            var unreadable = (await health.UnreadableStudentsAsync()).Count;
+            return new EnrollResultDto(true, unreadable == 0 ? "Распознавание готово."
+                : $"Образцы лиц {unreadable} студентов не расшифровываются (база перенесена без ключей шифрования). Зарегистрируйте их лица заново — история посещаемости сохранена.");
+        });
+
+        var admin = api.MapGroup("/admin").RequireAuthorization("Admin");
+        admin.MapGet("/backups", (BackupService backups) => backups.List());
+        admin.MapPost("/backups", async (BackupService backups, CancellationToken ct) => await backups.CreateAsync(automatic: false, ct));
+        admin.MapGet("/backups/{name}", (string name, BackupService backups) =>
+            backups.Resolve(name) is { } path
+                ? Results.File(path, "application/zip", Path.GetFileName(path))
+                : Results.Json(new ErrorDto("Копия не найдена."), statusCode: StatusCodes.Status404NotFound));
+        admin.MapPost("/restore", async (HttpRequest request, ClaimsPrincipal user, BackupService backups, SessionGeneration sessions, CancellationToken ct) =>
+            await backups.RestoreAsync(request.Body, ct, () => sessions.IsCurrent(user))).WithMetadata(new RequestSizeLimitAttribute(200L * 1024 * 1024));
 
         var journal = api.MapGroup("/journal");
         journal.MapGet("/{groupId:int}", async (int groupId, DateOnly from, DateOnly to, string? subject, ClaimsPrincipal user, AttendanceService attendance) =>
@@ -158,7 +179,7 @@ public static class ApiEndpoints
         journal.MapGet("/{groupId:int}/xlsx", async (int groupId, DateOnly from, DateOnly to, string? subject, ClaimsPrincipal user, AttendanceService attendance, ExportService export) =>
         {
             var matrix = await attendance.JournalAsync(TeacherId(user), groupId, from, to, NullIfEmpty(subject));
-            return Results.File(export.JournalXlsx(matrix, "Журнал посещаемости"),
+            return Results.File(export.JournalXlsx(matrix, "Журнал учёта посещаемости и успеваемости"),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", FileName(matrix, ".xlsx"));
         });
         journal.MapGet("/{groupId:int}/csv", async (int groupId, DateOnly from, DateOnly to, string? subject, ClaimsPrincipal user, AttendanceService attendance, ExportService export) =>
@@ -168,19 +189,7 @@ public static class ApiEndpoints
         });
     }
 
-    private static async Task<IResult> LoginAsync(LoginRequest request, AppDbContext db, IPasswordHasher<Teacher> hasher)
-    {
-        var teacher = await db.Teachers.SingleOrDefaultAsync(x => x.Login == request.Login.Trim());
-        if (teacher is null || hasher.VerifyHashedPassword(teacher, teacher.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
-            return Results.Json(new ErrorDto("Неверный логин или пароль."), statusCode: StatusCodes.Status401Unauthorized);
-        var identity = new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, teacher.Id.ToString(CultureInfo.InvariantCulture)),
-            new Claim(ClaimTypes.Name, teacher.FullName)
-        ], BearerTokenDefaults.AuthenticationScheme);
-        return Results.SignIn(new ClaimsPrincipal(identity), authenticationScheme: BearerTokenDefaults.AuthenticationScheme);
-    }
-
-    private static async ValueTask<object?> HandleErrorsAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    internal static async ValueTask<object?> HandleErrorsAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         try { return await next(context); }
         catch (InvalidOperationException ex) { return Results.Json(new ErrorDto(ex.Message), statusCode: StatusCodes.Status400BadRequest); }
@@ -189,11 +198,11 @@ public static class ApiEndpoints
         catch (FormatException ex) { return Results.Json(new ErrorDto(ex.Message), statusCode: StatusCodes.Status400BadRequest); }
     }
 
-    private static int TeacherId(ClaimsPrincipal user) =>
+    internal static int TeacherId(ClaimsPrincipal user) =>
         int.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), CultureInfo.InvariantCulture, out var id)
             ? id : throw new UnauthorizedAccessException("Требуется вход преподавателя.");
 
-    private static async Task EnsureSlotAsync(AppDbContext db, ClaimsPrincipal user, int slotId)
+    internal static async Task EnsureSlotAsync(AppDbContext db, ClaimsPrincipal user, int slotId)
     {
         var teacherId = TeacherId(user);
         if (!await db.ScheduleSlots.AnyAsync(x => x.Id == slotId && x.TeacherId == teacherId))
@@ -238,7 +247,8 @@ public static class ApiEndpoints
             dashboard.Groups.Select(g => new GroupAttendanceDto(g.GroupId, g.GroupName, g.Percent)).ToList(),
             dashboard.AtRisk.Select(r => new AtRiskStudentDto(r.StudentId, r.FullName, r.GroupName, r.Percent, r.Reason)).ToList(),
             dashboard.CameraMarks7Days, dashboard.CameraMarks30Days, dashboard.SavedMinutes7Days, dashboard.SavedMinutes30Days,
-            dashboard.SavingsFormula, dashboard.Trend.Select(t => new TrendPointDto(t.Date, t.Percent)).ToList());
+            dashboard.SavingsFormula, dashboard.Trend.Select(t => new TrendPointDto(t.Date, t.Percent)).ToList(),
+            dashboard.AverageScore30Days, dashboard.PendingFaceSubmissions);
     }
 
     private static async Task<ReportDto> ReportAsync(ClaimsPrincipal user, StatsService stats, ScheduleService schedule,
@@ -258,9 +268,9 @@ public static class ApiEndpoints
             automation.SecondsPerManualMark, automation.MinutesPerManualReport);
     }
 
-    private static AutomationSettingsDto Automation(IConfiguration configuration) => new(
+    private static AutomationSettingsDto Automation(IConfiguration configuration, int? framesInRow = null) => new(
         configuration.GetValue("Automation:SecondsPerManualMark", 6), configuration.GetValue("Automation:MinutesPerManualReport", 20),
-        configuration.GetValue("Attendance:LateAfterMinutes", 10), configuration.GetValue("Recognition:FramesInRow", 3));
+        framesInRow ?? configuration.GetValue("Recognition:FramesInRow", 3));
 
     private static SlotDto Map(ScheduleSlot slot, string groupName) => new(
         slot.Id, slot.GroupId, groupName, slot.Subject, slot.Room, slot.DayOfWeek, slot.Start, slot.End,
@@ -269,9 +279,12 @@ public static class ApiEndpoints
     private static LessonDto Map(LessonOccurrence lesson) =>
         new(Map(lesson.Slot, lesson.GroupName), lesson.Date, lesson.StartsAt, lesson.EndsAt, lesson.Cancelled);
 
-    private static JournalDto Map(JournalMatrix matrix) => new(matrix.TeacherName, matrix.GroupName, matrix.From, matrix.To,
-        matrix.Columns.Select(c => new JournalColumnDto(c.SlotId, c.Date, c.Start, c.Subject)).ToList(),
-        matrix.Students.Select(s => new JournalStudentDto(s.StudentId, s.FullName, s.Statuses, s.Percent)).ToList());
+    private static JournalDto Map(JournalMatrix matrix) => new(matrix.TeacherName, matrix.GroupName, matrix.Subject,
+        matrix.From, matrix.To, matrix.HoursPerLesson,
+        matrix.Columns.Select(c => new JournalColumnDto(c.Kind, c.Id, c.Date, c.Start, c.Subject, c.Title, c.AssessmentKind)).ToList(),
+        matrix.Students.Select(s => new JournalStudentDto(s.StudentId, s.FullName,
+            s.Cells.Select(c => new JournalCellDto(c.Status, c.Reason, c.Comment, c.Score)).ToList(),
+            s.Present, s.Absent, s.Excused, s.MissedHours, s.ExcusedHours, s.Percent, s.Average, s.Final)).ToList());
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 

@@ -11,7 +11,7 @@ internal sealed class ReportPage : Page
     private readonly Banner banner = new();
     private readonly Label period = Ui.Label("", 9, Theme.Violet, FontStyle.Bold);
     private readonly KpiTile saved = new("Сэкономлено преподавателем", 30) { Accent = true };
-    private readonly KpiTile camera = new("Автоматических отметок", 30);
+    private readonly KpiTile camera = new("Отмечено камерой", 30);
     private readonly KpiTile exports = new("Выгрузок журнала", 30);
     private readonly KpiTile attendance = new("Средняя посещаемость", 30);
     private readonly TableLayoutPanel kpis = new() { ColumnCount = 4, RowCount = 1, BackColor = Theme.Background };
@@ -44,7 +44,7 @@ internal sealed class ReportPage : Page
     private bool exporting;
     private int chartHeight = 340;
 
-    public ReportPage(ApiClient api) : base(api, "Отчёт для руководства", "Фактические результаты и расчёт масштаба колледжа")
+    public ReportPage(ApiClient api) : base(api, "Отчёт", "Посещаемость, зона риска и эффект от внедрения за 30 дней")
     {
         AutoScaleMode = AutoScaleMode.Dpi;
         Body.Controls.Add(scroll);
@@ -81,16 +81,16 @@ internal sealed class ReportPage : Page
         }
         content.Controls.Add(kpis);
 
-        var before = ComparisonColumn("ВРУЧНУЮ", Theme.Mix(Theme.Surface, Theme.Red, .13f),
+        var before = ComparisonColumn("БЕЗ СИСТЕМЫ", Theme.Mix(Theme.Surface, Theme.Red, .13f),
             [
                 (manualRollCall, rollCallDetail),
                 (manualReport, Detail("Переписать отметки в таблицу и посчитать проценты")),
                 (Ui.Label("Расписание переписывается каждую неделю", 10, Theme.Text, FontStyle.Bold), Detail("Изменения приходится отслеживать отдельно")),
-                (Ui.Label("Прогульщиков ищут по бумажному журналу", 10, Theme.Text, FontStyle.Bold), Detail("Проблему замечают с опозданием"))
+                (Ui.Label("Пропуски ищут по бумажному журналу", 10, Theme.Text, FontStyle.Bold), Detail("Проблему замечают поздно"))
             ]);
         var after = ComparisonColumn("С BISTUDENT", Theme.Mix(Theme.Surface, Theme.Green, .12f),
             [
-                (Ui.Label("0 минут на перекличку", 10, Theme.Text, FontStyle.Bold), Detail("Камера отмечает во время пары; опоздания фиксируются сами")),
+                (Ui.Label("Без устной переклички", 10, Theme.Text, FontStyle.Bold), Detail("Камера отмечает присутствие во время занятия")),
                 (Ui.Label("Журнал готов в любой момент", 10, Theme.Text, FontStyle.Bold), Detail("Excel и CSV одной кнопкой")),
                 (Ui.Label("Шаблон на семестр", 10, Theme.Text, FontStyle.Bold), Detail("Чётность, разовые занятия и отмены")),
                 (Ui.Label("Автоматическая «зона риска»", 10, Theme.Text, FontStyle.Bold), Detail("Ниже 70% или три пропуска подряд"))
@@ -158,7 +158,7 @@ internal sealed class ReportPage : Page
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, BackColor = Color.Transparent };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         for (var i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
-        layout.Controls.Add(Ui.Label(title, 9, title == "ВРУЧНУЮ" ? Theme.Red : Theme.Green, FontStyle.Bold), 0, 0);
+        layout.Controls.Add(Ui.Label(title, 9, title == "БЕЗ СИСТЕМЫ" ? Theme.Red : Theme.Green, FontStyle.Bold), 0, 0);
         for (var i = 0; i < items.Length; i++)
         {
             var row = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, BackColor = Color.Transparent };
@@ -212,7 +212,7 @@ internal sealed class ReportPage : Page
             attendance.Set(UiFormat.Percent(data.Dashboard.Attendance30Days),
                 $"{data.Dashboard.AtRisk.Count} в зоне риска", UiFormat.PercentColor(data.Dashboard.Attendance30Days));
             var rollCall = data.AverageGroupSize * data.SecondsPerManualMark / 60d;
-            manualRollCall.Text = $"Перекличка ≈ {rollCall:0.#} мин каждую пару";
+            manualRollCall.Text = $"Устная перекличка ≈ {rollCall:0.#} мин на занятие";
             rollCallDetail.Text = $"{data.AverageGroupSize} студентов × {data.SecondsPerManualMark} сек на фамилию и отметку";
             manualReport.Text = $"Сведение журнала ≈ {data.MinutesPerManualReport} мин на группу";
             formula.Text = $"Факт за месяц: {data.Dashboard.SavingsFormula}";
@@ -220,10 +220,10 @@ internal sealed class ReportPage : Page
             groups.Groups = data.Dashboard.Groups;
             groups.Risk = data.Dashboard.AtRisk;
             chartHeight = Math.Max(340, 135 + data.Dashboard.Groups.Count * 31 + Math.Min(5, data.Dashboard.AtRisk.Count) * 25);
-            scaleText.Text = $"преподавателей с нагрузкой как у этого ({data.LessonsPerWeek} пар в неделю, {data.GroupCount} групп):";
+            scaleText.Text = $"преподавателей с нагрузкой как у этого ({data.LessonsPerWeek} занятий в неделю, {data.GroupCount} групп):";
             UpdateScale();
             LayoutContent();
-            Subtitle = "Фактические результаты и расчёт масштаба колледжа";
+            Subtitle = "Посещаемость, зона риска и эффект от внедрения за 30 дней";
         }
         catch (ApiException ex) { Ui.Toast(this, ex.Message, true); Subtitle = "Не удалось загрузить отчёт"; }
         finally
@@ -244,7 +244,7 @@ internal sealed class ReportPage : Page
         allTeachers.Set($"{total:0.#} ч", "в месяц", Theme.Green);
         workDays.Set($"{total / 8:0.#}", "дней в месяц", Theme.Yellow);
         schoolYear.Set($"{total * 9:0.#} ч", "за 9 месяцев", Theme.Violet);
-        scaleFormula.Text = $"Расчёт: {report.LessonsPerWeek} пар × 4,3 недели × {rollCall:0.#} мин + {report.GroupCount} групп × {report.MinutesPerManualReport} мин. Один рабочий день — 8 часов.";
+        scaleFormula.Text = $"Расчёт: {report.LessonsPerWeek} занятий × 4,3 недели × {rollCall:0.#} мин + {report.GroupCount} групп × {report.MinutesPerManualReport} мин. Один рабочий день — 8 часов.";
     }
 
     private void Export(Action action)

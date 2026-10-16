@@ -29,11 +29,18 @@ internal sealed class ApiClient : IDisposable
     private static readonly TimeSpan LongTimeout = TimeSpan.FromSeconds(60);
     private readonly HttpClient _http;
     private readonly SynchronizationContext? _uiContext;
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+    private readonly object _sessionGate = new();
     private string? _accessToken;
+    private string? _refreshToken;
+    private int _generation;
+    private bool _ended;
     private int _unauthorizedRaised;
 
     public TeacherDto? Teacher { get; private set; }
+    public string? RefreshToken => _refreshToken;
     public event Action? Unauthorized;
+    public event Action<string?>? RefreshTokenChanged;
 
     public ApiClient() : this(ClientSettings.Load()) { }
 
@@ -47,12 +54,42 @@ internal sealed class ApiClient : IDisposable
         _uiContext = SynchronizationContext.Current;
     }
 
-    public async Task LoginAsync(string login, string password)
+    public async Task LoginAsync(string login, string password, bool remember = false)
     {
-        var token = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/login", Json(new LoginRequest(login, password)));
-        _accessToken = token.AccessToken;
-        _unauthorizedRaised = 0;
-        Teacher = null;
+        await _tokenLock.WaitAsync();
+        try
+        {
+            var generation = Volatile.Read(ref _generation);
+            var token = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/login", Json(new LoginRequest(login, password, remember)));
+            if (SetTokens(token, generation)) Teacher = null;
+        }
+        finally { _tokenLock.Release(); }
+    }
+
+    public async Task<bool> TryResumeAsync(string refreshToken)
+    {
+        if (!await RefreshAsync(refreshToken, CancellationToken.None)) return false;
+        await LoadMeAsync();
+        return true;
+    }
+
+    public async Task ChangePasswordAsync(string current, string next)
+    {
+        await _tokenLock.WaitAsync();
+        try
+        {
+            var generation = Volatile.Read(ref _generation);
+            var token = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/change-password",
+                Json(new ChangePasswordRequest(current, next)));
+            SetTokens(token, generation);
+        }
+        finally { _tokenLock.Release(); }
+        try { await LoadMeAsync(); }
+        catch (Exception)
+        {
+            try { await LoadMeAsync(); }
+            catch (Exception) { }
+        }
     }
 
     public async Task<TeacherDto> LoadMeAsync()
@@ -63,6 +100,28 @@ internal sealed class ApiClient : IDisposable
 
     public Task<AutomationSettingsDto> AutomationAsync() => GetAsync<AutomationSettingsDto>("api/settings/automation");
     public Task<EnrollResultDto> RecognitionStatusAsync() => GetAsync<EnrollResultDto>("api/recognition/status");
+    public Task<List<BackupFileDto>> BackupsAsync() => GetAsync<List<BackupFileDto>>("api/admin/backups");
+    public Task<BackupFileDto> CreateBackupAsync() =>
+        RequestAsync<BackupFileDto>(HttpMethod.Post, "api/admin/backups", timeout: LongTimeout);
+    public Task<RestoreResultDto> RestoreAsync(byte[] zip) =>
+        RequestAsync<RestoreResultDto>(HttpMethod.Post, "api/admin/restore", new ByteArrayContent(zip) { Headers = { ContentType = new MediaTypeHeaderValue("application/zip") } }, timeout: TimeSpan.FromMinutes(5));
+
+    public Task<List<TeacherAccountDto>> TeachersAsync() => GetAsync<List<TeacherAccountDto>>("api/admin/teachers");
+    public Task<TemporaryPasswordDto> CreateTeacherAsync(SaveTeacherRequest request) =>
+        RequestAsync<TemporaryPasswordDto>(HttpMethod.Post, "api/admin/teachers", Json(request));
+    public Task UpdateTeacherAsync(int id, SaveTeacherRequest request) =>
+        RequestAsync(HttpMethod.Put, $"api/admin/teachers/{id}", Json(request));
+    public Task<TemporaryPasswordDto> ResetTeacherPasswordAsync(int id) =>
+        RequestAsync<TemporaryPasswordDto>(HttpMethod.Post, $"api/admin/teachers/{id}/reset-password");
+
+    public async Task<(byte[] Content, string FileName)> DownloadBackupAsync(string name)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        using var response = await SendWithDeadlineAsync(HttpMethod.Get, $"api/admin/backups/{Uri.EscapeDataString(name)}", null, deadline.Token, CancellationToken.None);
+        try { return (await response.Content.ReadAsByteArrayAsync(deadline.Token), name); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw NetworkError(ex); }
+        catch (OperationCanceledException ex) { throw TimeoutError(ex); }
+    }
     public Task<DashboardDto> DashboardAsync(CancellationToken cancellationToken = default) =>
         RequestAsync<DashboardDto>(HttpMethod.Get, "api/dashboard", cancellationToken: cancellationToken);
     public Task<ReportDto> ReportAsync() => GetAsync<ReportDto>("api/report");
@@ -90,19 +149,77 @@ internal sealed class ApiClient : IDisposable
     public Task DeleteStudentAsync(int id) => RequestAsync(HttpMethod.Delete, $"api/students/{id}");
     public Task<ImportResultDto> ImportStudentsAsync(string csv) =>
         RequestAsync<ImportResultDto>(HttpMethod.Post, "api/students/import", new StringContent(csv, Encoding.UTF8, "text/csv"));
-    public Task<EnrollResultDto> EnrollAsync(int studentId, List<byte[]> images) =>
-        RequestAsync<EnrollResultDto>(HttpMethod.Post, $"api/students/{studentId}/enroll", Json(new EnrollRequest(images)), timeout: LongTimeout);
+    public Task<EnrollResultDto> EnrollAsync(int studentId, List<byte[]> images, bool allowSimilar = false) =>
+        RequestAsync<EnrollResultDto>(HttpMethod.Post, $"api/students/{studentId}/enroll", Json(new EnrollRequest(images, allowSimilar)), timeout: LongTimeout);
+
+    public async Task<EnrollmentCodeDto?> EnrollmentCodeAsync(int groupId)
+    {
+        using var deadline = new CancellationTokenSource(DefaultTimeout);
+        using var response = await SendWithDeadlineAsync(HttpMethod.Get, $"api/groups/{groupId}/enrollment-code", null,
+            deadline.Token, CancellationToken.None);
+        if (response.StatusCode == HttpStatusCode.NoContent) return null;
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
+            return await JsonSerializer.DeserializeAsync<EnrollmentCodeDto>(stream, JsonOptions, deadline.Token)
+                ?? throw new ApiException(response.StatusCode, "Пустой ответ сервера.");
+        }
+        catch (JsonException ex) { throw new ApiException(response.StatusCode, "Некорректный ответ сервера.", ex); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw NetworkError(ex); }
+        catch (OperationCanceledException ex) { throw TimeoutError(ex); }
+    }
+
+    public Task<EnrollmentCodeDto> CreateEnrollmentCodeAsync(int groupId, int hours) =>
+        RequestAsync<EnrollmentCodeDto>(HttpMethod.Post, $"api/groups/{groupId}/enrollment-code", Json(new CreateEnrollmentCodeRequest(hours)));
+    public Task RevokeEnrollmentCodeAsync(int groupId) =>
+        RequestAsync(HttpMethod.Delete, $"api/groups/{groupId}/enrollment-code");
+    public Task<List<FaceSubmissionDto>> FaceSubmissionsAsync() => GetAsync<List<FaceSubmissionDto>>("api/face-submissions");
+    public async Task<byte[]> FaceSubmissionImageAsync(int id, int index)
+    {
+        using var deadline = new CancellationTokenSource(LongTimeout);
+        using var response = await SendWithDeadlineAsync(HttpMethod.Get, $"api/face-submissions/{id}/images/{index}", null,
+            deadline.Token, CancellationToken.None);
+        try { return await response.Content.ReadAsByteArrayAsync(deadline.Token); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw NetworkError(ex); }
+        catch (OperationCanceledException ex) { throw TimeoutError(ex); }
+    }
+    public Task ApproveSubmissionAsync(int id) => RequestAsync(HttpMethod.Post, $"api/face-submissions/{id}/approve");
+    public Task RejectSubmissionAsync(int id, string? reason) =>
+        RequestAsync(HttpMethod.Post, $"api/face-submissions/{id}/reject", Json(new RejectSubmissionRequest(reason)));
 
     public Task<List<AttendanceRowDto>> AttendanceAsync(int slotId, DateOnly date, CancellationToken cancellationToken = default) =>
         RequestAsync<List<AttendanceRowDto>>(HttpMethod.Get, $"api/lessons/{slotId}/{QueryDate(date)}/attendance", cancellationToken: cancellationToken);
-    public Task MarkAsync(int slotId, DateOnly date, int studentId, AttendanceStatus? status) =>
-        RequestAsync(HttpMethod.Put, $"api/lessons/{slotId}/{QueryDate(date)}/attendance", Json(new MarkRequest(studentId, status)));
+    public Task MarkAsync(int slotId, DateOnly date, int studentId, AttendanceStatus? status,
+        ExcuseReason? reason = null, string? comment = null, bool hasDocument = false) =>
+        RequestAsync(HttpMethod.Put, $"api/lessons/{slotId}/{QueryDate(date)}/attendance",
+            Json(new MarkRequest(studentId, status, reason, comment, hasDocument)));
+    public Task LessonGradeAsync(int slotId, DateOnly date, int studentId, int? score) =>
+        RequestAsync(HttpMethod.Put, $"api/lessons/{slotId}/{QueryDate(date)}/grade", Json(new GradeRequest(studentId, score)));
     public Task<CountResult> FinishAsync(int slotId, DateOnly date) =>
         RequestAsync<CountResult>(HttpMethod.Post, $"api/lessons/{slotId}/{QueryDate(date)}/finish");
     public Task<CountResult> AllPresentAsync(int slotId, DateOnly date) =>
         RequestAsync<CountResult>(HttpMethod.Post, $"api/lessons/{slotId}/{QueryDate(date)}/all-present");
     public Task<RecognitionResultDto> RecognizeAsync(int slotId, DateOnly date, byte[] jpeg, CancellationToken cancellationToken) =>
         RequestAsync<RecognitionResultDto>(HttpMethod.Post, "api/recognize", Json(new RecognizeRequest(slotId, date, jpeg)), cancellationToken);
+
+    public Task<List<string>> SubjectsAsync(int groupId) => GetAsync<List<string>>($"api/journal/{groupId}/subjects");
+    public Task<List<AssessmentDto>> AssessmentsAsync(int? groupId, string? subject)
+    {
+        var query = new List<string>();
+        if (groupId.HasValue) query.Add($"groupId={groupId.Value}");
+        if (!string.IsNullOrWhiteSpace(subject)) query.Add($"subject={Uri.EscapeDataString(subject)}");
+        return GetAsync<List<AssessmentDto>>("api/assessments" + (query.Count == 0 ? "" : "?" + string.Join("&", query)));
+    }
+    public Task<AssessmentDto> SaveAssessmentAsync(int? id, SaveAssessmentRequest request) =>
+        RequestAsync<AssessmentDto>(id.HasValue ? HttpMethod.Put : HttpMethod.Post,
+            id.HasValue ? $"api/assessments/{id.Value}" : "api/assessments", Json(request));
+    public Task DeleteAssessmentAsync(int id) => RequestAsync(HttpMethod.Delete, $"api/assessments/{id}");
+    public Task AssessmentGradeAsync(int assessmentId, int studentId, int? score) =>
+        RequestAsync(HttpMethod.Put, $"api/assessments/{assessmentId}/grades", Json(new GradeRequest(studentId, score)));
+    public Task FinalGradeAsync(int groupId, string subject, int studentId, int? score) =>
+        RequestAsync(HttpMethod.Put, $"api/journal/{groupId}/final", Json(new FinalGradeRequest(subject, studentId, score)));
+    public Task<CountResult> FillFinalAsync(int groupId, string subject) =>
+        RequestAsync<CountResult>(HttpMethod.Post, $"api/journal/{groupId}/final/fill", Json(new FillFinalRequest(subject)));
 
     public Task<JournalDto> JournalAsync(int groupId, DateOnly from, DateOnly to, string? subject, CancellationToken cancellationToken = default) =>
         RequestAsync<JournalDto>(HttpMethod.Get, JournalPath(groupId, from, to, subject, ""), cancellationToken: cancellationToken, timeout: LongTimeout);
@@ -170,25 +287,136 @@ internal sealed class ApiClient : IDisposable
 
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, HttpContent? content = null, CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(method, path) { Content = content };
-        if (_accessToken is not null && path != "api/auth/login")
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+        using var source = content;
         try
         {
-            var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var body = source is null ? null : await source.ReadAsByteArrayAsync(cancellationToken);
+            var headers = source?.Headers.ToArray();
+            var token = _accessToken;
+            var response = await SendOnceAsync(method, path, body, headers, token, cancellationToken);
             if (response.IsSuccessStatusCode) return response;
-            using (response)
+            var authRequest = path.StartsWith("api/auth/", StringComparison.OrdinalIgnoreCase);
+            if (response.StatusCode == HttpStatusCode.Unauthorized && !authRequest && token is not null)
             {
-                if (response.StatusCode == HttpStatusCode.Unauthorized && _accessToken is not null && path != "api/auth/login")
+                response.Dispose();
+                if (await RefreshAfterUnauthorizedAsync(token, cancellationToken))
+                {
+                    response = await SendOnceAsync(method, path, body, headers, _accessToken, cancellationToken);
+                    if (response.IsSuccessStatusCode) return response;
+                }
+                else
                 {
                     RaiseUnauthorized();
-                    throw new ApiException(response.StatusCode, "Сессия истекла — войдите снова.");
+                    throw new ApiException(HttpStatusCode.Unauthorized, "Сессия истекла — войдите снова.");
                 }
+            }
+            using (response)
+            {
                 throw new ApiException(response.StatusCode, await ErrorMessageAsync(response, cancellationToken));
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException) { throw NetworkError(ex); }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested) { throw TimeoutError(ex); }
+    }
+
+    private async Task<HttpResponseMessage> SendOnceAsync(HttpMethod method, string path, byte[]? body,
+        KeyValuePair<string, IEnumerable<string>>[]? headers, string? token, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(method, path);
+        if (body is not null)
+        {
+            request.Content = new ByteArrayContent(body);
+            if (headers is not null)
+                foreach (var header in headers) request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+        if (token is not null && path != "api/auth/login" && path != "api/auth/refresh")
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    }
+
+    private async Task<bool> RefreshAfterUnauthorizedAsync(string failedToken, CancellationToken cancellationToken)
+    {
+        var generation = Volatile.Read(ref _generation);
+        await _tokenLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (Volatile.Read(ref _ended)) return false;
+            if (_accessToken is not null && _accessToken != failedToken) return true;
+            return IsCurrentGeneration(generation) && _refreshToken is { } token
+                && await RefreshCoreAsync(token, generation, cancellationToken);
+        }
+        finally { _tokenLock.Release(); }
+    }
+
+    private async Task<bool> RefreshAsync(string token, CancellationToken cancellationToken)
+    {
+        var generation = Volatile.Read(ref _generation);
+        await _tokenLock.WaitAsync(cancellationToken);
+        try
+        {
+            return IsCurrentGeneration(generation)
+                && await RefreshCoreAsync(token, generation, cancellationToken);
+        }
+        finally { _tokenLock.Release(); }
+    }
+
+    private async Task<bool> RefreshCoreAsync(string token, int generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var refreshed = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/refresh",
+                Json(new RefreshRequest(token)), cancellationToken);
+            return SetTokens(refreshed, generation);
+        }
+        catch (ApiException ex) when (ex.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized)
+        {
+            ClearTokens(generation);
+            return false;
+        }
+    }
+
+    private bool IsCurrentGeneration(int generation) =>
+        !Volatile.Read(ref _ended) && Volatile.Read(ref _generation) == generation;
+
+    private bool SetTokens(TokenResponse token, int generation)
+    {
+        lock (_sessionGate)
+        {
+            if (_ended || _generation != generation) return false;
+            _accessToken = token.AccessToken;
+            _refreshToken = token.RefreshToken;
+            _generation++;
+            _unauthorizedRaised = 0;
+            RefreshTokenChanged?.Invoke(_refreshToken);
+            return true;
+        }
+    }
+
+    private void ClearTokens(int generation)
+    {
+        lock (_sessionGate)
+        {
+            if (_ended || _generation != generation) return;
+            _accessToken = null;
+            _refreshToken = null;
+            _generation++;
+            Teacher = null;
+            RefreshTokenChanged?.Invoke(null);
+        }
+    }
+
+    public void EndSession()
+    {
+        lock (_sessionGate)
+        {
+            if (_ended) return;
+            _ended = true;
+            _generation++;
+            _accessToken = null;
+            _refreshToken = null;
+            Teacher = null;
+            RefreshTokenChanged = null;
+        }
     }
 
     private static async Task<string> ErrorMessageAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -215,10 +443,11 @@ internal sealed class ApiClient : IDisposable
 
     private void RaiseUnauthorized()
     {
+        if (Volatile.Read(ref _ended)) return;
         if (Interlocked.Exchange(ref _unauthorizedRaised, 1) != 0) return;
         if (_uiContext is null || _uiContext == SynchronizationContext.Current) Unauthorized?.Invoke();
-        else _uiContext.Post(_ => Unauthorized?.Invoke(), null);
+        else _uiContext.Post(_ => { if (!Volatile.Read(ref _ended)) Unauthorized?.Invoke(); }, null);
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose() { EndSession(); _tokenLock.Dispose(); _http.Dispose(); }
 }

@@ -38,8 +38,8 @@ public sealed class StudentAndExportTests
         using var stream = new MemoryStream(bytes);
         using var book = new XLWorkbook(stream);
         var sheet = book.Worksheet("Журнал");
-        Assert.Equal("Иван Иванов", sheet.Cell(5, 1).GetString());
-        Assert.Equal(50d, sheet.Cell(5, 4).GetDouble());
+        Assert.Equal("Иван Иванов", sheet.Cell(8, 2).GetString());
+        Assert.Equal(50d, sheet.Cell(8, 7).GetDouble());
     }
 
     [Fact]
@@ -48,13 +48,16 @@ public sealed class StudentAndExportTests
         using var test = new TestDb();
         var csv = test.Export.JournalCsv(Matrix());
         Assert.StartsWith("\uFEFF", csv);
-        Assert.Contains("\"Студент\";\"01.09.2026 09:00 Алгебра\";", csv);
-        Assert.Contains("\"Иван Иванов\";\"+\";\"Н\";\"50.0\"", csv);
+        Assert.Contains("\"№\";\"ФИО студента\";\"01.09.2026 09:00 Алгебра\";", csv);
+        Assert.Contains("\"1\";\"Иван Иванов\";\"П\";\"Н\";\"2\";\"0\";\"50.0\"", csv);
     }
 
     private static JournalMatrix Matrix() => new(
-        "Ирина Иванова", "ИВТ-1", new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 8),
-        [new JournalColumn(1, new DateOnly(2026, 9, 1), new TimeOnly(9, 0), "Алгебра"),
-            new JournalColumn(2, new DateOnly(2026, 9, 8), new TimeOnly(9, 0), "Физика")],
-        [new JournalStudent(1, "Иван Иванов", [AttendanceStatus.Present, AttendanceStatus.Absent], 50d)]);
+        "Ирина Иванова", "ИВТ-1", null, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 8), 2,
+        [new JournalColumn(JournalColumnKind.Lesson, 1, new DateOnly(2026, 9, 1), new TimeOnly(9, 0), "Алгебра"),
+            new JournalColumn(JournalColumnKind.Lesson, 2, new DateOnly(2026, 9, 8), new TimeOnly(9, 0), "Физика")],
+        [new JournalStudent(1, "Иван Иванов",
+            [new JournalCell(AttendanceStatus.Present, null, null, false, null),
+                new JournalCell(AttendanceStatus.Absent, null, null, false, null)],
+            1, 1, 0, 2, 0, 50d, null, null)]);
 }

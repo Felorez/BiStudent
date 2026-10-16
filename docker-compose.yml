@@ -8,8 +8,8 @@ services:
     ports:
       - "5080:8080"
     environment:
-      Demo__Login: teacher
-      Demo__Password: teacher123
+      Setup__AdminPassword: admin
+      # Demo__Enabled: "true"
       Automation__SecondsPerManualMark: "6"
       Automation__MinutesPerManualReport: "20"
       Semester__Start: "2026-09-01"

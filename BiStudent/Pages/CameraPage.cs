@@ -12,18 +12,18 @@ internal sealed class CameraPage : Page
 
     private readonly ModernComboBox lessons = new() { Dock = DockStyle.Fill };
     private readonly ModernComboBox cameras = new() { Dock = DockStyle.Fill };
-    private readonly ModernButton start = new() { Text = "▶ Запустить", Primary = true, Width = 165 };
-    private readonly ModernButton stop = new() { Text = "■ Остановить", Width = 165 };
-    private readonly ModernButton finish = new() { Text = "Завершить пару", Danger = true, Width = 180 };
+    private readonly ModernButton start = new() { Text = "Начать отметку", Primary = true, Width = 170 };
+    private readonly ModernButton stop = new() { Text = "Остановить", Width = 140 };
+    private readonly ModernButton finish = new() { Text = "Завершить занятие", Danger = true, Width = 200 };
     private readonly PictureBox preview = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Sidebar };
-    private readonly Label placeholder = Ui.Label("Камера выключена. Выберите пару и нажмите «Запустить».\nОтметка ставится после нескольких кадров подряд.", 10, Theme.Muted);
+    private readonly Label placeholder = Ui.Label("Камера выключена. Выберите занятие и нажмите «Начать отметку».", 10, Theme.Muted);
     private readonly Label banner = Ui.Label("", 9.5f, Theme.Red);
     private readonly Label marked = Ui.Label("0 из 0 отмечено", 15, Theme.Text, FontStyle.Bold);
     private readonly Label automatic = Ui.Label("0 камерой", 12, Theme.Green, FontStyle.Bold);
-    private readonly Label saved = Ui.Label("≈ 0 с сэкономлено на перекличке", 10, Theme.Muted);
+    private readonly Label saved = Ui.Label("", 10, Theme.Muted);
     private readonly Label indicator = Ui.Label("Камера выключена", 9.5f, Theme.Muted);
-    private readonly AttendanceList attendance = new() { Dock = DockStyle.Fill, EmptyText = "Выберите пару, чтобы увидеть список" };
-    private readonly CardPanel students = new("Студенты пары");
+    private readonly AttendanceList attendance = new() { Dock = DockStyle.Fill, EmptyText = "Выберите занятие, чтобы увидеть список" };
+    private readonly CardPanel students = new("Студенты группы");
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 2000 };
     private readonly SemaphoreSlim attendanceWrite = new(1, 1);
     private LessonDto? selectedLesson;
@@ -46,15 +46,15 @@ internal sealed class CameraPage : Page
     private bool manualBusy;
     private bool finishing;
 
-    public CameraPage(ApiClient api) : base(api, "Автоотметка", "Камера узнаёт студентов и сама ставит отметки, пока идёт пара")
+    public CameraPage(ApiClient api) : base(api, "Отметка посещаемости", "Камера распознаёт студентов группы и отмечает присутствие во время занятия")
     {
-        var left = new CardPanel("Камера", "выберите пару и устройство") { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 14, 0) };
+        var left = new CardPanel("Камера", "выберите занятие и устройство") { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 14, 0) };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 7, BackColor = Theme.Surface };
         foreach (var height in new[] { 48, 48, 50, 42 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 57));
-        layout.Controls.Add(Field("Пара", lessons), 0, 0);
+        layout.Controls.Add(Field("Занятие", lessons), 0, 0);
         layout.Controls.Add(Field("Камера", cameras), 0, 1);
         var buttons = Ui.Row();
         buttons.Controls.Add(start); buttons.Controls.Add(stop);
@@ -80,7 +80,7 @@ internal sealed class CameraPage : Page
         var foot = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, BackColor = Theme.Surface };
         foot.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         foot.Controls.Add(indicator, 0, 0);
-        var warning = Ui.Label("Зелёная — группа · синяя — отмечен · серая — другая группа · красная — неизвестный\nФото на экране телефона может обмануть распознавание: отметки проверяет преподаватель", 8, Theme.Muted);
+        var warning = Ui.Label("Зелёная — студент группы · синяя — уже отмечен · серая — другая группа · красная — не распознан", 8, Theme.Muted);
         warning.AutoEllipsis = true;
         foot.Controls.Add(warning, 0, 1);
         layout.Controls.Add(foot, 0, 6);
@@ -159,10 +159,10 @@ internal sealed class CameraPage : Page
             if (choice is not null)
                 lessons.SelectedIndex = day.FindIndex(item => ReferenceEquals(item, choice));
             selectedLesson = choice;
-            students.Caption = choice?.Slot.GroupName ?? "Студенты пары";
+            students.Caption = choice?.Slot.GroupName ?? "Студенты группы";
             placeholder.Text = choice is null
-                ? "Сегодня пар нет — автоотметка доступна в дни занятий"
-                : $"Камера выключена. Выберите пару и нажмите «Запустить».\nОтметка ставится после {automation.FramesInRow} кадров подряд.";
+                ? "Сегодня занятий нет"
+                : $"Камера выключена. Выберите занятие и нажмите «Начать отметку».\nОтметка ставится после {automation.FramesInRow} кадров подряд.";
             placeholder.Visible = true;
             var devices = CameraDevices.List();
             cameras.Items.Clear();
@@ -172,7 +172,7 @@ internal sealed class CameraPage : Page
                 var index = CameraDevices.ResolveIndex(ClientSettings.Load(), devices);
                 cameras.SelectedIndex = Math.Max(0, devices.FindIndex(device => device.Index == index));
             }
-            indicator.Text = choice is null ? "Сегодня нет пар для автоотметки" : devices.Count == 0 ? "Камера не найдена" : "Камера выключена";
+            indicator.Text = choice is null ? "Сегодня занятий нет" : devices.Count == 0 ? "Камера не найдена" : "Камера выключена";
             await RefreshAttendanceAsync();
             if (!IsDisposed && !leftPage) refresh.Start();
         }
@@ -186,7 +186,7 @@ internal sealed class CameraPage : Page
     private async Task SelectLessonAsync()
     {
         selectedLesson = (lessons.SelectedItem as LessonChoice)?.Lesson;
-        students.Caption = selectedLesson?.Slot.GroupName ?? "Студенты пары";
+        students.Caption = selectedLesson?.Slot.GroupName ?? "Студенты группы";
         attendance.SetRows([]);
         SetStatistics([]);
         SetControls();
@@ -235,8 +235,7 @@ internal sealed class CameraPage : Page
         var cameraCount = rows.Count(row => row.Status is not null && row.Method == MarkMethod.Camera);
         marked.Text = $"{count} из {rows.Count} отмечено";
         automatic.Text = $"{cameraCount} камерой";
-        var seconds = cameraCount * (automation?.SecondsPerManualMark ?? 0);
-        saved.Text = $"≈ {UiFormat.Duration(seconds / 60d)} сэкономлено на перекличке";
+        saved.Text = "";
     }
 
     private async Task MarkAsync(AttendanceRowDto row, AttendanceStatus? status)
@@ -262,9 +261,9 @@ internal sealed class CameraPage : Page
     private async Task FinishAsync()
     {
         if (finishing || selectedLesson is not { } lesson) return;
-        if (!Ui.Confirm(FindForm(), "Завершить пару",
-            "Всем, кто ещё без отметки, будет поставлено «Отсутствует». Отметки можно исправить позже в журнале.",
-            "Завершить пару", danger: true)) return;
+        if (!Ui.Confirm(FindForm(), "Завершить занятие",
+            "Всем студентам без отметки будет поставлено «Н».",
+            "Завершить занятие", danger: true)) return;
         finishing = true;
         SetControls();
         try
@@ -274,7 +273,7 @@ internal sealed class CameraPage : Page
             try { await Api.FinishAsync(lesson.Slot.Id, lesson.Date); }
             finally { attendanceWrite.Release(); }
             await RefreshAttendanceAsync();
-            Ui.Toast(this, "Пара завершена");
+            Ui.Toast(this, "Занятие завершено");
         }
         catch (ApiException ex) { if (!IsDisposed) Ui.Toast(this, ex.Message, true); }
         finally
@@ -432,22 +431,30 @@ internal sealed class CameraPage : Page
         if (lastResult is not { } result || (DateTime.UtcNow - resultAt).TotalSeconds > 1.5 || result.FrameWidth <= 0) return;
         var scale = bitmap.Width / (float)result.FrameWidth;
         using var graphics = Graphics.FromImage(bitmap);
+        graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        var fontPixels = Math.Clamp(bitmap.Width / 38, 14, 40);
+        var stroke = Math.Max(3, bitmap.Width / 260);
+        var accent = Math.Max(3, fontPixels / 5);
+        using var font = new Font("Segoe UI", fontPixels, FontStyle.Bold, GraphicsUnit.Pixel);
         foreach (var face in result.Faces)
         {
             var color = face.StudentId is null ? Theme.Red : face.OtherGroup ? Theme.Muted
                 : face.Marked || face.AlreadyMarked ? Theme.Accent : Theme.Green;
             var bounds = new Rectangle((int)(face.X * scale), (int)(face.Y * scale),
                 Math.Max(1, (int)(face.W * scale)), Math.Max(1, (int)(face.H * scale)));
-            using var pen = new Pen(color, 3);
+            using var pen = new Pen(color, stroke);
             graphics.DrawRectangle(pen, bounds);
-            var text = face.StudentId is null ? "Неизвестный"
-                : $"{face.Name ?? "Студент"} · {face.Similarity * 100:0}%{(face.OtherGroup ? " · другая группа" : "")}";
-            var size = TextRenderer.MeasureText(text, Theme.Font(10, FontStyle.Bold));
-            var label = new Rectangle(Math.Clamp(bounds.Left, 0, Math.Max(0, bitmap.Width - size.Width - 12)),
-                Math.Clamp(bounds.Top - 29, 0, Math.Max(0, bitmap.Height - 26)), size.Width + 10, 26);
-            Ui.FillRounded(graphics, label, 5, color);
-            TextRenderer.DrawText(graphics, text, Theme.Font(10, FontStyle.Bold), label, Theme.Background,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            var text = face.StudentId is null ? "Не распознан" : face.Name ?? "Студент";
+            var size = TextRenderer.MeasureText(graphics, text, font, System.Drawing.Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+            var pad = Math.Max(6, fontPixels / 3);
+            var width = Math.Min(bitmap.Width, size.Width + pad * 2 + accent);
+            var height = size.Height + pad;
+            var top = bounds.Top - height - stroke >= 0 ? bounds.Top - height - stroke : Math.Min(bitmap.Height - height, bounds.Bottom + stroke);
+            var label = new Rectangle(Math.Clamp(bounds.Left, 0, Math.Max(0, bitmap.Width - width)), Math.Max(0, top), width, height);
+            Ui.FillRounded(graphics, label, pad, Color.FromArgb(225, Theme.Sidebar));
+            Ui.FillRounded(graphics, new Rectangle(label.X, label.Y, accent * 2, label.Height), accent, color);
+            TextRenderer.DrawText(graphics, text, font, new Rectangle(label.X + accent + pad, label.Y, label.Width - accent - pad, label.Height), color,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
         }
     }
 

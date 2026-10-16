@@ -6,13 +6,15 @@ internal sealed class MainForm : DarkForm
 {
     private static readonly (string Key, string Text, string Icon)[] Pages =
     [
-        ("today", "Сегодня", "◷"), ("camera", "Автоотметка", "◉"), ("schedule", "Расписание", "▦"),
-        ("journal", "Журнал", "☰"), ("groups", "Группы", "◍"), ("report", "Отчёт для руководства", "▲")
+        ("today", "Сегодня", "◷"), ("camera", "Отметка", "◉"), ("schedule", "Расписание", "▦"),
+        ("journal", "Журнал", "☰"), ("groups", "Группы", "◍"), ("report", "Отчёт", "▲"),
+        ("admin", "Администрирование", "⚙")
     ];
 
     private readonly ApiClient api;
     private readonly Panel host = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
     private readonly Dictionary<string, ModernButton> nav = [];
+    private readonly ContextMenuStrip userMenu = new() { BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, Font = Theme.Font(10) };
     private Page? current;
     private Label? userName;
     private Label? userAvatar;
@@ -52,12 +54,13 @@ internal sealed class MainForm : DarkForm
         var mark = new Label { Text = "✓", Size = new Size(38, 38), BackColor = Theme.Accent, ForeColor = Color.White, Font = Theme.Font(16, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Margin = new Padding(0, 4, 0, 0) };
         brand.Controls.Add(mark, 0, 0); brand.SetRowSpan(mark, 2);
         brand.Controls.Add(Ui.Label("BiStudent", 15, Theme.Text, FontStyle.Bold), 1, 0);
-        brand.Controls.Add(Ui.Label("Посещаемость без переклички", 8.5f, Theme.Muted), 1, 1);
+        brand.Controls.Add(Ui.Label("Посещаемость и успеваемость", 8.5f, Theme.Muted), 1, 1);
         sidebar.Controls.Add(brand, 0, 0);
 
         var menu = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Sidebar };
         foreach (var (key, text, icon) in Pages)
         {
+            if (key == "admin" && api.Teacher?.IsAdmin != true) continue;
             var button = new ModernButton { Text = text, Icon = icon, Width = 206, Height = 44, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, key == "report" ? 14 : 0, 0, 6), Dashed = key == "report", BackColor = Theme.Sidebar };
             button.Click += async (_, _) => await ShowPageAsync(key);
             nav[key] = button;
@@ -75,12 +78,24 @@ internal sealed class MainForm : DarkForm
         var nameLabel = Ui.Label(name, 9.5f, Theme.Text, FontStyle.Bold); nameLabel.AutoEllipsis = true; nameLabel.TextAlign = ContentAlignment.BottomLeft;
         user.Controls.Add(nameLabel, 1, 0);
         userName = nameLabel;
-        var roleLabel = Ui.Label("Преподаватель", 8.5f, Theme.Muted); roleLabel.TextAlign = ContentAlignment.TopLeft;
+        var roleLabel = Ui.Label(api.Teacher?.IsAdmin == true ? "Администратор" : "Преподаватель", 8.5f, Theme.Muted); roleLabel.TextAlign = ContentAlignment.TopLeft;
         user.Controls.Add(roleLabel, 1, 1);
         var exit = new ModernButton { Text = "↩", Width = 38, Height = 38, Font = Theme.Font(12, FontStyle.Bold), BackColor = Theme.Sidebar, Margin = new Padding(0, 12, 0, 0) };
-        exit.Click += (_, _) => { SignedOut = true; Close(); };
+        exit.Click += (_, _) => SignOut();
         new ToolTip().SetToolTip(exit, "Выйти");
         user.Controls.Add(exit, 2, 0); user.SetRowSpan(exit, 2);
+        userMenu.Items.Add("Сменить пароль…", null, (_, _) =>
+        {
+            using var dialog = new ChangePasswordDialog(api, forced: false);
+            if (dialog.ShowDialog(this) == DialogResult.OK) Ui.Toast(this, "Пароль изменён");
+        });
+        userMenu.Items.Add("Выйти", null, (_, _) => SignOut());
+        void OpenUserMenu(object? sender, EventArgs e)
+        {
+            if (sender is Control control) userMenu.Show(control, new Point(0, control.Height));
+        }
+        avatar.Click += OpenUserMenu; nameLabel.Click += OpenUserMenu; roleLabel.Click += OpenUserMenu;
+        user.Click += OpenUserMenu;
         sidebar.Controls.Add(user, 0, 2);
 
         Controls.Add(host);
@@ -98,6 +113,7 @@ internal sealed class MainForm : DarkForm
         "groups" => new GroupsPage(api),
         "camera" => new CameraPage(api),
         "report" => new ReportPage(api),
+        "admin" => new AdminPage(api),
         _ => throw new ArgumentOutOfRangeException(nameof(key), key, null)
     };
 
@@ -139,6 +155,16 @@ internal sealed class MainForm : DarkForm
         return current?.LoadAsync() ?? Task.CompletedTask;
     }
 
+    private void SignOut()
+    {
+        api.EndSession();
+        var settings = ClientSettings.Load();
+        settings.StoreRefreshToken(null);
+        settings.Save();
+        SignedOut = true;
+        Close();
+    }
+
     private void OnUnauthorized()
     {
         if (IsDisposed || SignedOut) return;
@@ -167,6 +193,7 @@ internal sealed class MainForm : DarkForm
             return;
         }
         api.Unauthorized -= OnUnauthorized;
+        userMenu.Dispose();
         base.OnFormClosing(e);
     }
 }

@@ -5,12 +5,14 @@ namespace BiStudent;
 internal sealed class TodayPage : Page
 {
     private readonly KpiTile attendance = new("Посещаемость за 7 дней");
-    private readonly KpiTile automatic = new("Автоотметок за неделю");
-    private readonly KpiTile saved = new("Сэкономлено за неделю") { Accent = true };
+    private readonly KpiTile automatic = new("Отмечено камерой за неделю");
+    private readonly KpiTile score = new("Средний балл за 30 дней") { Accent = true };
     private readonly KpiTile risk = new("В зоне риска");
     private readonly CardPanel nowCard = new("Сейчас");
-    private readonly CardPanel lessonsCard = new("Пары сегодня", "двойной клик — отметки");
-    private readonly CardPanel riskCard = new("Зона риска", "считается автоматически по последним 30 дням");
+    private readonly CardPanel lessonsCard = new("Занятия сегодня", "двойной клик — открыть занятие");
+    private readonly CardPanel riskCard = new("Зона риска", "по данным за 30 дней");
+    private readonly Panel pending = new() { Dock = DockStyle.Top, Height = 62, BackColor = Theme.Surface, Visible = false };
+    private readonly Label pendingText = Ui.Label("", 11, Theme.Yellow, FontStyle.Bold);
     private readonly ListView lessons = DarkList();
     private readonly FlowLayoutPanel riskList = new() { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.LeftToRight, BackColor = Theme.Surface };
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 60000 };
@@ -22,14 +24,14 @@ internal sealed class TodayPage : Page
     {
         var kpis = new TableLayoutPanel { Dock = DockStyle.Top, Height = 124, ColumnCount = 4, BackColor = Theme.Background, Padding = new Padding(0, 0, 0, 16) };
         for (var i = 0; i < 4; i++) kpis.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        foreach (var tile in new[] { attendance, automatic, saved, risk }) { tile.Dock = DockStyle.Fill; kpis.Controls.Add(tile); }
+        foreach (var tile in new[] { attendance, automatic, score, risk }) { tile.Dock = DockStyle.Fill; kpis.Controls.Add(tile); }
         risk.Margin = Padding.Empty;
 
         var middle = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, BackColor = Theme.Background };
         middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52)); middle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
         nowCard.Dock = DockStyle.Fill; nowCard.Margin = new Padding(0, 0, 14, 0);
         lessonsCard.Dock = DockStyle.Fill; lessonsCard.Margin = Padding.Empty;
-        lessons.Columns.Add("Время", 80); lessons.Columns.Add("Пара", 300); lessons.Columns.Add("Статус", 110);
+        lessons.Columns.Add("Время", 80); lessons.Columns.Add("Занятие", 300); lessons.Columns.Add("Статус", 110);
         lessons.Resize += (_, _) => lessons.Columns[1].Width = Math.Max(160, lessons.ClientSize.Width - 200);
         lessons.DoubleClick += async (_, _) =>
         {
@@ -42,7 +44,19 @@ internal sealed class TodayPage : Page
         riskCard.Body.Controls.Add(riskList);
         var spacer = new Panel { Dock = DockStyle.Bottom, Height = 16, BackColor = Theme.Background };
 
-        Body.Controls.Add(middle); Body.Controls.Add(spacer); Body.Controls.Add(riskCard); Body.Controls.Add(kpis);
+        var check = new ModernButton { Text = "Проверить", Width = 140, Dock = DockStyle.Right };
+        check.Click += async (_, _) =>
+        {
+            using var dialog = new FaceSubmissionsDialog(Api);
+            dialog.ShowDialog(FindForm());
+            if (dialog.Changed) await LoadAsync();
+        };
+        pending.Padding = new Padding(18, 10, 18, 10);
+        pendingText.Dock = DockStyle.Fill;
+        pending.Controls.Add(pendingText);
+        pending.Controls.Add(check);
+        Body.Controls.Add(middle); Body.Controls.Add(spacer); Body.Controls.Add(riskCard);
+        Body.Controls.Add(pending); Body.Controls.Add(kpis);
         refresh.Tick += async (_, _) =>
         {
             try { await LoadAsync(); }
@@ -107,7 +121,7 @@ internal sealed class TodayPage : Page
             {
                 var rows = await Api.AttendanceAsync(lesson.Slot.Id, lesson.Date);
                 if (Gone) return;
-                percents[lesson.Slot.Id] = rows.Count == 0 ? 0 : 100d * rows.Count(r => r.Status is AttendanceStatus.Present or AttendanceStatus.Late) / rows.Count;
+                percents[lesson.Slot.Id] = rows.Count == 0 ? 0 : 100d * rows.Count(r => r.Status == AttendanceStatus.Present) / rows.Count;
             }
             List<AttendanceRowDto>? currentRows = null;
             if (data.Current is { } live)
@@ -116,9 +130,11 @@ internal sealed class TodayPage : Page
                 if (Gone) return;
             }
             attendance.Set(UiFormat.Percent(data.Attendance7Days), $"за 30 дней — {UiFormat.Percent(data.Attendance30Days)}", UiFormat.PercentColor(data.Attendance7Days));
-            automatic.Set(data.CameraMarks7Days.ToString(), "без переклички вслух");
-            saved.Set(UiFormat.Duration(data.SavedMinutes7Days), $"за месяц — {UiFormat.Duration(data.SavedMinutes30Days)}");
+            automatic.Set(data.CameraMarks7Days.ToString(), $"за месяц — {data.CameraMarks30Days}");
+            score.Set(data.AverageScore30Days is { } average ? average.ToString("0.0") : "—", "по 100-балльной шкале");
             risk.Set(data.AtRisk.Count.ToString(), "студентов требуют внимания", data.AtRisk.Count > 0 ? Theme.Red : Theme.Green);
+            pending.Visible = data.PendingFaceSubmissions > 0;
+            pendingText.Text = $"Заявки на регистрацию лица: {data.PendingFaceSubmissions}";
             BuildNow(data, now, currentRows);
             BuildLessons(now, percents);
             BuildRisk(data.AtRisk);
@@ -139,8 +155,8 @@ internal sealed class TodayPage : Page
         if (lesson is null)
         {
             nowCard.Caption = "Сегодня";
-            layout.Controls.Add(Ui.Label("Пар сегодня больше нет", 18, Theme.Text, FontStyle.Bold), 0, 1);
-            layout.Controls.Add(Ui.Label("Журнал за прошедшие занятия уже собран автоматически.", 10, Theme.Muted), 0, 2);
+            layout.Controls.Add(Ui.Label("Занятий сегодня больше нет", 18, Theme.Text, FontStyle.Bold), 0, 1);
+            layout.Controls.Add(Ui.Label("Отметки прошедших занятий доступны в журнале.", 10, Theme.Muted), 0, 2);
             var journal = new ModernButton { Text = "Открыть журнал", Width = 180 };
             journal.Click += async (_, _) => { if (Shell is { } shell) await shell.ShowPageAsync("journal"); };
             var row = Ui.Row(); row.Controls.Add(journal); layout.Controls.Add(row, 0, 5);
@@ -148,7 +164,7 @@ internal sealed class TodayPage : Page
             return;
         }
         var live = data.Current is not null;
-        nowCard.Caption = live ? "● Идёт сейчас" : "Следующая пара";
+        nowCard.Caption = live ? "● Идёт сейчас" : "Следующее занятие";
         layout.Controls.Add(Ui.Label(lesson.Slot.Subject, 20, Theme.Text, FontStyle.Bold), 0, 1);
         layout.Controls.Add(Ui.Label($"{lesson.Slot.GroupName} · {UiFormat.Range(lesson.Slot)}{(lesson.Slot.Room is { } room ? $" · ауд. {room}" : "")}", 10.5f, Theme.Muted), 0, 2);
         if (live)
@@ -165,9 +181,9 @@ internal sealed class TodayPage : Page
             layout.Controls.Add(Ui.Label("Камеру можно запустить заранее — отметка начнётся со звонком.", 9.5f, Theme.Muted), 0, 4);
         }
         var actions = Ui.Row();
-        var camera = new ModernButton { Text = live ? "Запустить автоотметку" : "Подготовить камеру", Icon = "◉", Primary = true, Width = 250 };
+        var camera = new ModernButton { Text = live ? "Начать отметку" : "Подготовить камеру", Icon = "◉", Primary = true, Width = 250 };
         camera.Click += async (_, _) => { if (Shell is { } shell) await shell.OpenCamera(lesson); };
-        var manual = new ModernButton { Text = "Отметить вручную", Width = 190 };
+        var manual = new ModernButton { Text = "Открыть занятие", Width = 190 };
         manual.Click += async (_, _) => { if (Shell is { } shell) await shell.OpenLessonAsync(lesson); };
         actions.Controls.Add(camera); actions.Controls.Add(manual);
         layout.Controls.Add(actions, 0, 5);
@@ -197,7 +213,7 @@ internal sealed class TodayPage : Page
             item.SubItems.Add(new ListViewItem.ListViewSubItem { Text = state, Tag = color });
             lessons.Items.Add(item);
         }
-        if (today.Count == 0) lessons.Items.Add(new ListViewItem(["", "По расписанию сегодня пар нет", ""]));
+        if (today.Count == 0) lessons.Items.Add(new ListViewItem(["", "По расписанию сегодня занятий нет", ""]));
         }
         finally { lessons.EndUpdate(); }
     }

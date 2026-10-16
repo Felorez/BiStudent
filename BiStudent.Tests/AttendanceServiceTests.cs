@@ -15,10 +15,10 @@ public sealed class AttendanceServiceTests
         var date = new DateOnly(2026, 9, 1);
         var student = group.Students.Single();
         Assert.True(await test.Attendance.MarkAsync(slot.Id, date, student.Id, AttendanceStatus.Present, MarkMethod.Manual));
-        Assert.True(await test.Attendance.MarkAsync(slot.Id, date, student.Id, AttendanceStatus.Late, MarkMethod.Manual));
+        Assert.True(await test.Attendance.MarkAsync(slot.Id, date, student.Id, AttendanceStatus.Absent, MarkMethod.Manual));
         Assert.False(await test.Attendance.MarkAsync(slot.Id, date, student.Id, AttendanceStatus.Present, MarkMethod.Camera));
         var mark = Assert.Single(test.Db.AttendanceMarks);
-        Assert.Equal(AttendanceStatus.Late, mark.Status);
+        Assert.Equal(AttendanceStatus.Absent, mark.Status);
         Assert.Equal(MarkMethod.Manual, mark.Method);
     }
 
@@ -84,7 +84,8 @@ public sealed class AttendanceServiceTests
         Assert.Equal(2, journal.Columns.Count);
         Assert.DoesNotContain(journal.Columns, x => x.Date == second);
         var row = Assert.Single(journal.Students);
-        Assert.Equal(new AttendanceStatus?[] { AttendanceStatus.Present, AttendanceStatus.Absent }, row.Statuses);
+        Assert.Equal(new AttendanceStatus?[] { AttendanceStatus.Present, AttendanceStatus.Absent },
+            row.Cells.Select(x => x.Status));
         Assert.Equal(50d, row.Percent);
     }
 }

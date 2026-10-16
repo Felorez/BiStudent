@@ -76,37 +76,60 @@ internal static class UiFormat
 
     public static string StatusText(AttendanceStatus? status) => status switch
     {
-        AttendanceStatus.Present => "Присутствует",
-        AttendanceStatus.Late => "Опоздал",
-        AttendanceStatus.Absent => "Отсутствует",
-        AttendanceStatus.Excused => "Уважительная",
-        _ => "Нет отметки"
+        AttendanceStatus.Present => "П",
+        AttendanceStatus.Absent => "Н",
+        AttendanceStatus.Excused => "Н (уваж.)",
+        _ => "—"
     };
 
     public static string StatusSymbol(AttendanceStatus? status) => status switch
     {
-        AttendanceStatus.Present => "+",
-        AttendanceStatus.Late => "О",
+        AttendanceStatus.Present => "П",
         AttendanceStatus.Absent => "Н",
-        AttendanceStatus.Excused => "У",
+        AttendanceStatus.Excused => "Н",
         _ => "·"
     };
 
     public static Color StatusColor(AttendanceStatus? status) => status switch
     {
         AttendanceStatus.Present => Green,
-        AttendanceStatus.Late => Yellow,
         AttendanceStatus.Absent => Red,
-        AttendanceStatus.Excused => Violet,
+        AttendanceStatus.Excused => Yellow,
         _ => Muted
     };
     public static Color StatusBack(AttendanceStatus? status) => Color.FromArgb(40, StatusColor(status));
+
+    public static string ExcuseReasonText(ExcuseReason reason) => reason switch
+    {
+        ExcuseReason.Illness => "Болезнь",
+        ExcuseReason.Family => "Семейные обстоятельства",
+        ExcuseReason.Official => "Учебная/служебная необходимость",
+        _ => "Другая причина"
+    };
+
+    public static string AssessmentKindText(AssessmentKind kind) => kind switch
+    {
+        AssessmentKind.Test => "Тест",
+        AssessmentKind.ControlWork => "Контрольная работа",
+        AssessmentKind.Exam => "Экзамен",
+        AssessmentKind.Credit => "Зачёт",
+        _ => "Другое"
+    };
+
+    public static string AssessmentKindShort(AssessmentKind kind) => kind switch
+    {
+        AssessmentKind.Test => "Тест",
+        AssessmentKind.ControlWork => "К/р",
+        AssessmentKind.Exam => "Экз.",
+        AssessmentKind.Credit => "Зачёт",
+        _ => "—"
+    };
 
     public static string MethodText(MarkMethod? method) => method switch
     {
         MarkMethod.Camera => "камера",
         MarkMethod.Manual => "вручную",
-        MarkMethod.Demo => "демо",
+        MarkMethod.Demo => "отмечено",
         _ => "—"
     };
 

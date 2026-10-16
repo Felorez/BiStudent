@@ -24,15 +24,17 @@ internal sealed class TestDb : IDisposable
     public StudentService Students { get; }
     public ExportService Export { get; }
 
+    public GradeService Grades { get; }
+
     public TestDb()
     {
         connection.Open();
         Db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
-        Db.Database.EnsureCreated();
+        DatabaseInitializer.Initialize(Db);
         Configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Semester:Start"] = "2026-09-01",
-            ["Attendance:LateAfterMinutes"] = "10",
+            ["Attendance:HoursPerLesson"] = "2",
             ["Automation:SecondsPerManualMark"] = "6",
             ["Automation:MinutesPerManualReport"] = "20"
         }).Build();
@@ -43,6 +45,7 @@ internal sealed class TestDb : IDisposable
             DataProtectionProvider.Create("tests"), Configuration);
         Students = new StudentService(Db, recognition);
         Export = new ExportService(Db);
+        Grades = new GradeService(Db, Configuration);
     }
 
     public Teacher AddTeacher()

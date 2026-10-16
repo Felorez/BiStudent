@@ -11,8 +11,9 @@ internal sealed class GroupsPage : Page
     private readonly Label status = Ui.Label("", 9, Theme.Muted);
     private readonly Label recognitionNote = Ui.Label("", 9, Theme.Red);
     private readonly ModernButton deleteGroup = new() { Text = "Удалить пустую группу", Danger = true, Width = 220, Visible = false };
+    private readonly ModernButton submissionsButton = new() { Text = "Заявки на регистрацию", Width = 220 };
     private readonly ContextMenuStrip menu = new() { BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, Font = Theme.Font(10) };
-    private readonly ToolStripMenuItem enrollItem = new("Зарегистрировать лицо");
+    private readonly ToolStripMenuItem enrollItem = new("Зарегистрировать лицо с этой камеры");
     private readonly ToolStripMenuItem editItem = new("Изменить…");
     private readonly ToolStripMenuItem deleteItem = new("Удалить…");
     private List<GroupDto> groups = [];
@@ -21,18 +22,20 @@ internal sealed class GroupsPage : Page
     private bool recognitionAvailable;
     private string recognitionMessage = "";
 
-    public GroupsPage(ApiClient api) : base(api, "Группы и студенты", "Списки групп, посещаемость и регистрация лиц для автоотметки")
+    public GroupsPage(ApiClient api) : base(api, "Группы", "Списки групп и регистрация лиц студентов")
     {
         var import = new ModernButton { Text = "Импорт CSV", Width = 140 };
+        var code = new ModernButton { Text = "Код регистрации", Width = 185 };
         var addGroup = new ModernButton { Text = "+ Группа", Width = 130 };
         var addStudent = new ModernButton { Text = "+ Студент", Width = 140, Primary = true };
-        Actions.Controls.Add(import); Actions.Controls.Add(addGroup); Actions.Controls.Add(addStudent);
+        Actions.Controls.Add(import); Actions.Controls.Add(code); Actions.Controls.Add(submissionsButton);
+        Actions.Controls.Add(addGroup); Actions.Controls.Add(addStudent);
         import.Click += async (_, _) => await ImportAsync();
+        code.Click += (_, _) => OpenCode();
+        submissionsButton.Click += async (_, _) => await OpenSubmissionsAsync();
         addGroup.Click += async (_, _) => await AddGroupAsync();
         addStudent.Click += async (_, _) => await AddStudentAsync();
 
-        var hint = new AutomationHint("список группы загружается из CSV за секунды, а после регистрации лица студент отмечается камерой без участия преподавателя");
-        hint.Margin = new Padding(0, 0, 0, 14);
         studentsCard.Dock = DockStyle.Fill;
         studentsCard.Tools.Controls.Add(deleteGroup);
         deleteGroup.Click += async (_, _) => await DeleteGroupAsync();
@@ -56,7 +59,6 @@ internal sealed class GroupsPage : Page
         {
             var student = SelectedStudent();
             if (student is null) { e.Cancel = true; return; }
-            enrollItem.Text = student.HasFace ? "Обновить лицо" : "Зарегистрировать лицо";
             enrollItem.Enabled = recognitionAvailable;
         };
         enrollItem.Click += async (_, _) => { if (SelectedStudent() is { } student) await EnrollAsync(student); };
@@ -69,7 +71,7 @@ internal sealed class GroupsPage : Page
         info.Controls.Add(recognitionNote);
         status.Dock = DockStyle.Bottom; status.Height = 25;
         studentsCard.Body.Controls.Add(grid); studentsCard.Body.Controls.Add(info); studentsCard.Body.Controls.Add(status);
-        Body.Controls.Add(studentsCard); Body.Controls.Add(groupCards); Body.Controls.Add(hint);
+        Body.Controls.Add(studentsCard); Body.Controls.Add(groupCards);
     }
 
     public override Task LoadAsync() => RunAsync(async () =>
@@ -96,6 +98,10 @@ internal sealed class GroupsPage : Page
             selectedId = groups.FirstOrDefault()?.Id;
         RenderGroups();
         await LoadGroupAsync();
+        if (IsDisposed) return;
+        var submissions = await Api.FaceSubmissionsAsync();
+        if (!IsDisposed)
+            submissionsButton.Text = submissions.Count == 0 ? "Заявки на регистрацию" : $"Заявки на регистрацию ({submissions.Count})";
     }
 
     private void RenderGroups()
@@ -167,11 +173,15 @@ internal sealed class GroupsPage : Page
                 var student = students[i];
                 var percent = 0d;
                 var hasLessons = journal.Columns.Count > 0 && percentages.TryGetValue(student.Id, out percent);
-                var index = grid.Rows.Add(i + 1, student.FullName, student.HasFace ? "✓ зарегистрировано" : "нет",
+                var face = student.FaceUnreadable ? "требуется повторная регистрация"
+                    : student.FacePending ? "на проверке"
+                    : student.HasFace ? "зарегистрировано" : "нет";
+                var index = grid.Rows.Add(i + 1, student.FullName, face,
                     hasLessons ? UiFormat.Percent(percent) : "—");
                 var row = grid.Rows[index];
                 row.Tag = student;
-                row.Cells[2].Style.ForeColor = student.HasFace ? Theme.Green : Theme.Muted;
+                row.Cells[2].Style.ForeColor = student.FaceUnreadable ? Theme.Red : student.FacePending ? Theme.Yellow
+                    : student.HasFace ? Theme.Green : Theme.Muted;
                 row.Cells[3].Style.ForeColor = hasLessons ? UiFormat.PercentColor(percent) : Theme.Muted;
             }
             deleteGroup.Visible = students.Count == 0;
@@ -181,6 +191,24 @@ internal sealed class GroupsPage : Page
 
     private StudentDto? SelectedStudent() =>
         grid.CurrentRow?.Tag as StudentDto;
+
+    private void OpenCode()
+    {
+        if (selectedId is not { } id)
+        {
+            Ui.Toast(this, "Выберите группу");
+            return;
+        }
+        using var dialog = new EnrollmentCodeDialog(Api, id, groups.First(group => group.Id == id).Name);
+        dialog.ShowDialog(FindForm());
+    }
+
+    private async Task OpenSubmissionsAsync()
+    {
+        using var dialog = new FaceSubmissionsDialog(Api);
+        dialog.ShowDialog(FindForm());
+        if (dialog.Changed) await RunAsync(() => ReloadAsync());
+    }
 
     private async Task ImportAsync()
     {

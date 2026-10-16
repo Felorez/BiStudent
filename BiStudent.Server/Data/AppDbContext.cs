@@ -13,6 +13,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<SlotCancellation> SlotCancellations => Set<SlotCancellation>();
     public DbSet<AttendanceMark> AttendanceMarks => Set<AttendanceMark>();
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
+    public DbSet<LessonGrade> LessonGrades => Set<LessonGrade>();
+    public DbSet<Assessment> Assessments => Set<Assessment>();
+    public DbSet<AssessmentGrade> AssessmentGrades => Set<AssessmentGrade>();
+    public DbSet<FinalGrade> FinalGrades => Set<FinalGrade>();
+    public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
+    public DbSet<FaceSubmission> FaceSubmissions => Set<FaceSubmission>();
+    public DbSet<FaceSubmissionImage> FaceSubmissionImages => Set<FaceSubmissionImage>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -28,5 +35,33 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         model.Entity<SlotCancellation>().HasOne(x => x.Slot).WithMany(x => x.Cancellations).HasForeignKey(x => x.SlotId).OnDelete(DeleteBehavior.Cascade);
         model.Entity<AttendanceMark>().HasOne(x => x.Slot).WithMany().HasForeignKey(x => x.SlotId).OnDelete(DeleteBehavior.Cascade);
         model.Entity<AttendanceMark>().HasOne(x => x.Student).WithMany().HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<AttendanceMark>().Property(x => x.Comment).HasMaxLength(500);
+
+        model.Entity<LessonGrade>().HasIndex(x => new { x.SlotId, x.Date, x.StudentId }).IsUnique();
+        model.Entity<LessonGrade>().HasOne(x => x.Slot).WithMany().HasForeignKey(x => x.SlotId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<LessonGrade>().HasOne(x => x.Student).WithMany().HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<LessonGrade>().ToTable(t => t.HasCheckConstraint("CK_LessonGrades_Score", "Score BETWEEN 1 AND 100"));
+
+        model.Entity<Assessment>().HasIndex(x => new { x.TeacherId, x.GroupId, x.Subject });
+        model.Entity<Assessment>().HasOne(x => x.Teacher).WithMany().HasForeignKey(x => x.TeacherId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<Assessment>().HasOne(x => x.Group).WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<AssessmentGrade>().HasIndex(x => new { x.AssessmentId, x.StudentId }).IsUnique();
+        model.Entity<AssessmentGrade>().HasOne(x => x.Assessment).WithMany(x => x.Grades).HasForeignKey(x => x.AssessmentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<AssessmentGrade>().HasOne(x => x.Student).WithMany().HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<AssessmentGrade>().ToTable(t => t.HasCheckConstraint("CK_AssessmentGrades_Score", "Score BETWEEN 1 AND 100"));
+
+        model.Entity<FinalGrade>().HasIndex(x => new { x.TeacherId, x.GroupId, x.Subject, x.StudentId }).IsUnique();
+        model.Entity<FinalGrade>().HasOne(x => x.Teacher).WithMany().HasForeignKey(x => x.TeacherId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<FinalGrade>().HasOne(x => x.Group).WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<FinalGrade>().HasOne(x => x.Student).WithMany().HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<FinalGrade>().ToTable(t => t.HasCheckConstraint("CK_FinalGrades_Score", "Score BETWEEN 1 AND 100"));
+
+        model.Entity<EnrollmentCode>().HasIndex(x => x.Code).IsUnique();
+        model.Entity<EnrollmentCode>().HasOne(x => x.Group).WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<EnrollmentCode>().HasOne(x => x.CreatedBy).WithMany().HasForeignKey(x => x.CreatedByTeacherId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<FaceSubmission>().HasIndex(x => new { x.Status, x.CreatedAt });
+        model.Entity<FaceSubmission>().HasOne(x => x.Student).WithMany().HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<FaceSubmission>().HasOne(x => x.EnrollmentCode).WithMany().HasForeignKey(x => x.EnrollmentCodeId).OnDelete(DeleteBehavior.SetNull);
+        model.Entity<FaceSubmissionImage>().HasOne(x => x.Submission).WithMany(x => x.Images).HasForeignKey(x => x.SubmissionId).OnDelete(DeleteBehavior.Cascade);
     }
 }

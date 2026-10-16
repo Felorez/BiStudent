@@ -32,7 +32,8 @@ public sealed class StatsServiceTests
         Assert.Equal(2, dashboard.CameraMarks30Days);
         Assert.True(Math.Abs(dashboard.SavedMinutes7Days - 40.1) < 0.0001);
         Assert.True(Math.Abs(dashboard.SavedMinutes30Days - 60.2) < 0.0001);
-        Assert.Contains(dashboard.AtRisk, x => x.StudentId == risk.Id && x.Reason == "Три и более пропуска подряд");
+        Assert.Contains(dashboard.AtRisk, x => x.StudentId == risk.Id &&
+            x.Reason == "Три и более пропуска подряд без уважительной причины");
     }
 
     [Fact]

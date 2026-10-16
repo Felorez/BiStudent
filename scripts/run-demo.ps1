@@ -1,32 +1,39 @@
 <#
 .SYNOPSIS
-  Запускает демо BiStudent: сервер API на http://localhost:5080 и клиент преподавателя (WinForms).
+  Запускает BiStudent: сервер на порту 5080 (доступен в локальной сети) и клиент преподавателя (WinForms).
+.PARAMETER Demo
+  При первом запуске на пустой базе заполнить её демонстрационными данными
+  (преподаватель teacher / teacher123, группы, расписание, история посещаемости и оценок).
+  Без этого ключа создаётся администратор admin / admin, пароль нужно сменить при первом входе.
 .PARAMETER Reset
-  Удалить локальную базу сервера перед запуском (демо-данные создадутся заново).
+  Удалить базу сервера перед запуском (C:\ProgramData\BiStudent). Все данные будут потеряны.
 #>
-param([switch]$Reset)
+param([switch]$Demo, [switch]$Reset)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $root 'BiStudent.Server'
 $client = Join-Path $root 'BiStudent'
-$url = 'http://localhost:5080'
+$port = 5080
+$url = "http://localhost:$port"
 
 if (-not (dotnet --list-sdks | Select-String '^10\.')) {
     Write-Error 'Нужен .NET 10 SDK: https://dotnet.microsoft.com/download/dotnet/10.0'
 }
 
 if ($Reset) {
-    $data = Join-Path $server 'App_Data'
-    if (Test-Path $data) { Remove-Item -Recurse -Force $data; Write-Host 'База сброшена.' }
+    $data = Join-Path $env:ProgramData 'BiStudent'
+    if (Test-Path $data) { Remove-Item -Recurse -Force $data; Write-Host "База удалена: $data" }
 }
 
 Write-Host 'Сборка решения…'
 dotnet build (Join-Path $root 'BiStudent.slnx') -c Release -v q | Out-Host
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Запуск сервера на $url…"
-$serverProcess = Start-Process dotnet -ArgumentList @('run', '--project', $server, '-c', 'Release', '--no-build', '--urls', $url) `
+if ($Demo) { $env:Demo__Enabled = 'true' } else { Remove-Item Env:Demo__Enabled -ErrorAction SilentlyContinue }
+
+Write-Host "Запуск сервера на порту $port…"
+$serverProcess = Start-Process dotnet -ArgumentList @('run', '--project', $server, '-c', 'Release', '--no-build', '--no-launch-profile', '--urls', "http://0.0.0.0:$port") `
     -WorkingDirectory $server -WindowStyle Minimized -PassThru
 
 $ready = $false
@@ -40,7 +47,11 @@ if (-not $ready) {
     Write-Error 'Сервер не ответил за 60 секунд.'
 }
 
-Write-Host 'Сервер готов. Открываю клиент преподавателя (демо: teacher / teacher123).'
+Write-Host 'Сервер готов.'
+Write-Host "Сайт регистрации лица для студентов: http://<IP этого компьютера>:$port/register/ (адрес и QR-код — в клиенте: Группы → Код регистрации)."
+if ($Demo) { Write-Host 'Демонстрационный вход: teacher / teacher123.' }
+else { Write-Host 'Первый вход: admin / admin — система попросит сменить пароль.' }
+
 $exe = Get-ChildItem (Join-Path $client 'bin\Release') -Recurse -Filter BiStudent.exe | Select-Object -First 1
 $clientProcess = Start-Process $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
 $clientProcess.WaitForExit()

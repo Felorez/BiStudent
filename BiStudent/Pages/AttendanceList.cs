@@ -5,11 +5,11 @@ namespace BiStudent;
 
 internal sealed class AttendanceList : Panel
 {
-    private const int RowHeight = 54;
+    private const int RowHeight = 60;
     private static readonly (AttendanceStatus Status, string Short, string Long)[] Buttons =
     [
-        (AttendanceStatus.Present, "+", "Был"), (AttendanceStatus.Late, "О", "Опоздал"),
-        (AttendanceStatus.Absent, "Н", "Нет"), (AttendanceStatus.Excused, "У", "Уваж.")
+        (AttendanceStatus.Present, "П", "Был"), (AttendanceStatus.Absent, "Н", "Нет"),
+        (AttendanceStatus.Excused, "Ув.", "Уважит.")
     ];
 
     private readonly Canvas canvas;
@@ -38,6 +38,7 @@ internal sealed class AttendanceList : Panel
     public bool WideButtons { get; }
     public string EmptyText { get; set; } = "Список пуст";
     public event Func<AttendanceRowDto, AttendanceStatus?, Task>? StatusChosen;
+    public event Func<AttendanceRowDto, Task>? GradeChosen;
     public IReadOnlyList<AttendanceRowDto> Rows => rows;
 
     public void SetRows(List<AttendanceRowDto> value)
@@ -61,10 +62,13 @@ internal sealed class AttendanceList : Panel
 
     private int ButtonWidth => WideButtons ? 78 : 36;
 
+    private Rectangle GradeBounds(int row) =>
+        new(canvas.Width - 86, row * RowHeight + (RowHeight - 32) / 2, 74, 32);
+
     private Rectangle ButtonBounds(int row, int index)
     {
         var width = ButtonWidth;
-        var x = canvas.Width - 12 - (Buttons.Length - index) * (width + 4);
+        var x = canvas.Width - 94 - (Buttons.Length - index) * (width + 4);
         return new Rectangle(x, row * RowHeight + (RowHeight - 32) / 2, width, 32);
     }
 
@@ -72,6 +76,7 @@ internal sealed class AttendanceList : Panel
     {
         var row = point.Y / RowHeight;
         if (row < 0 || row >= rows.Count) return (-1, -1);
+        if (GradeBounds(row).Contains(point)) return (row, -2);
         for (var i = 0; i < Buttons.Length; i++)
             if (ButtonBounds(row, i).Contains(point)) return (row, i);
         return (row, -1);
@@ -98,7 +103,7 @@ internal sealed class AttendanceList : Panel
         {
             var hit = owner.HitTest(e.Location);
             if (hit != owner.hover) { owner.hover = hit; Invalidate(); }
-            Cursor = hit.Button >= 0 ? Cursors.Hand : Cursors.Default;
+            Cursor = hit.Button != -1 ? Cursors.Hand : Cursors.Default;
             base.OnMouseMove(e);
         }
 
@@ -109,6 +114,11 @@ internal sealed class AttendanceList : Panel
             base.OnMouseClick(e);
             if (e.Button != MouseButtons.Left) return;
             var (row, button) = owner.HitTest(e.Location);
+            if (row >= 0 && button == -2)
+            {
+                if (owner.GradeChosen is not null) await owner.GradeChosen(owner.rows[row]);
+                return;
+            }
             if (row < 0 || button < 0 || owner.StatusChosen is null) return;
             var item = owner.rows[row];
             var status = Buttons[button].Status;
@@ -139,8 +149,14 @@ internal sealed class AttendanceList : Panel
                 var textWidth = owner.ButtonBounds(i, 0).Left - 18;
                 TextRenderer.DrawText(g, row.FullName, Theme.Font(10, FontStyle.Bold), new Rectangle(12, bounds.Top + 7, textWidth, 22), Theme.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
                 var info = row.Status is null ? "ждём отметки"
-                    : $"{UiFormat.StatusText(row.Status)} · {UiFormat.MethodText(row.Method)}{(row.MarkedAt is { } at ? $" · {at:HH:mm}" : "")}";
+                    : row.Status == AttendanceStatus.Excused
+                        ? $"{UiFormat.ExcuseReasonText(row.Reason ?? ExcuseReason.Other)}{(row.HasDocument ? " · документ" : "")}"
+                        : $"{UiFormat.StatusText(row.Status)} · {UiFormat.MethodText(row.Method)}{(row.MarkedAt is { } at ? $" · {at:HH:mm}" : "")}";
                 TextRenderer.DrawText(g, info, Theme.Font(8.5f), new Rectangle(12, bounds.Top + 29, textWidth, 18), row.Status is null ? Theme.Muted : UiFormat.StatusColor(row.Status), TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                var grade = owner.GradeBounds(i);
+                Ui.FillRounded(g, grade, 9, owner.hover == (i, -2) ? Theme.SurfaceAlt : Theme.SurfaceHover);
+                TextRenderer.DrawText(g, row.Score?.ToString() ?? "Балл", Theme.Font(9.5f, FontStyle.Bold), grade, row.Score.HasValue ? Theme.Text : Theme.Muted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
                 for (var b = 0; b < Buttons.Length; b++)
                 {
                     var rect = owner.ButtonBounds(i, b);

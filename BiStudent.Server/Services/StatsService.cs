@@ -11,7 +11,8 @@ public sealed record AttendanceTrend(DateOnly Date, double Percent);
 public sealed record DashboardStats(int LessonsToday, LessonOccurrence? NextOrCurrent, double Attendance7Days,
     double Attendance30Days, List<GroupAttendance> Groups, List<AtRiskStudent> AtRisk,
     int CameraMarks7Days, int CameraMarks30Days, double SavedMinutes7Days, double SavedMinutes30Days,
-    string SavingsFormula, List<AttendanceTrend> Trend);
+    string SavingsFormula, List<AttendanceTrend> Trend, double? AverageScore30Days,
+    int PendingFaceSubmissions);
 
 public sealed class StatsService(AppDbContext db, ScheduleService schedule, IConfiguration configuration)
 {
@@ -52,7 +53,7 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
                     if (person.GroupId != lesson.Slot.GroupId) continue;
                     possible++;
                     if (markMap.TryGetValue((lesson.Slot.Id, lesson.Date, person.Id), out var mark) &&
-                        mark.Status is AttendanceStatus.Present or AttendanceStatus.Late) attended++;
+                        mark.Status == AttendanceStatus.Present) attended++;
                 }
             return possible == 0 ? 0 : 100d * attended / possible;
         }
@@ -76,7 +77,7 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
             }
             if (lessons.Count > 0 && (percent < 70 || longest >= 3))
                 risk.Add(new AtRiskStudent(student.Id, student.FullName, student.Group.Name, percent,
-                    longest >= 3 ? "Три и более пропуска подряд" : "Посещаемость ниже 70%"));
+                    longest >= 3 ? "Три и более пропуска подряд без уважительной причины" : "Посещаемость ниже 70%"));
         }
         var last7 = today.AddDays(-6);
         var camera7 = marks.Count(x => x.Method == MarkMethod.Camera && x.Date >= last7);
@@ -91,12 +92,21 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
             int.TryParse(x.Value, out var count) ? count : 0);
         var trend = occurrences.GroupBy(x => x.Date).OrderBy(x => x.Key)
             .Select(x => new AttendanceTrend(x.Key, Percent(x, students))).ToList();
+        var lessonScores = await db.LessonGrades.AsNoTracking()
+            .Where(x => x.Slot.TeacherId == teacherId && x.Date >= from && x.Date <= today)
+            .Select(x => x.Score).ToListAsync();
+        var assessmentScores = await db.AssessmentGrades.AsNoTracking()
+            .Where(x => x.Assessment.TeacherId == teacherId &&
+                x.Assessment.Date >= from && x.Assessment.Date <= today)
+            .Select(x => x.Score).ToListAsync();
+        var scores = lessonScores.Concat(assessmentScores).ToList();
+        var pending = await db.FaceSubmissions.CountAsync(x => x.Status == FaceSubmissionStatus.Pending);
         return new DashboardStats(todayLessons.Count(x => !x.Cancelled), next,
             Percent(occurrences.Where(x => x.Date >= last7), students), Percent(occurrences, students),
             groups, risk.OrderBy(x => x.Percent).ToList(), camera7, camera30,
             camera7 * seconds / 60d + ReportsSince(last7) * reportMinutes,
             camera30 * seconds / 60d + ReportsSince(from) * reportMinutes,
-            $"Автоотметки × {seconds} сек. + выгруженные отчёты × {reportMinutes} мин.",
-            trend);
+            $"Отметки камерой × {seconds} сек. + выгрузки журнала × {reportMinutes} мин.",
+            trend, scores.Count == 0 ? null : scores.Average(), pending);
     }
 }

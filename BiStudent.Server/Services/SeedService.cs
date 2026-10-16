@@ -12,13 +12,24 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
     public async Task SeedAsync()
     {
         if (await db.Teachers.AnyAsync()) return;
+        var demo = configuration.GetValue("Demo:Enabled", false);
         var teacher = new Teacher {
-            Login = configuration["Demo:Login"] ?? "teacher",
-            FullName = configuration["Demo:TeacherName"] ?? "Преподаватель (демо)"
+            Login = demo ? configuration["Demo:Login"] ?? "teacher" : configuration["Setup:AdminLogin"] ?? "admin",
+            FullName = demo ? configuration["Demo:TeacherName"] ?? "Преподаватель (демо)"
+                : configuration["Setup:AdminName"] ?? "Администратор",
+            IsAdmin = true,
+            MustChangePassword = !demo
         };
-        teacher.PasswordHash = hasher.HashPassword(teacher, configuration["Demo:Password"] ?? "teacher123");
+        teacher.PasswordHash = hasher.HashPassword(teacher, demo
+            ? configuration["Demo:Password"] ?? "teacher123"
+            : configuration["Setup:AdminPassword"] ?? "admin");
         db.Teachers.Add(teacher);
         await db.SaveChangesAsync();
+        if (!demo)
+        {
+            logger.LogWarning("Создан администратор «{Login}». Войдите и смените пароль.", teacher.Login);
+            return;
+        }
 
         var path = new[] {
             Path.Combine(environment.ContentRootPath, "seed", "students.local.csv"),
@@ -76,7 +87,7 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
         if (cancelled is not null)
         {
             db.SlotCancellations.Add(new SlotCancellation {
-                SlotId = cancelled.Slot.Id, Date = cancelled.Date, Reason = "Демо: занятие отменено"
+                SlotId = cancelled.Slot.Id, Date = cancelled.Date, Reason = "Перенос по распоряжению учебной части"
             });
         }
         var students = await db.Students.OrderBy(x => x.Id).ToListAsync();
@@ -89,16 +100,49 @@ public sealed class SeedService(AppDbContext db, IConfiguration configuration, I
                 var roll = random.NextDouble();
                 var risk = riskIds.Contains(student.Id);
                 var status = roll < (risk ? 0.60 : 0.89) ? AttendanceStatus.Present :
-                    roll < (risk ? 0.65 : 0.94) ? AttendanceStatus.Late :
-                    roll < (risk ? 0.68 : 0.97) ? AttendanceStatus.Excused : AttendanceStatus.Absent;
-                var attended = status is AttendanceStatus.Present or AttendanceStatus.Late;
+                    roll < (risk ? 0.68 : 0.93) ? AttendanceStatus.Excused : AttendanceStatus.Absent;
+                var reasonRoll = random.NextDouble();
+                var reason = reasonRoll < 0.70 ? ExcuseReason.Illness :
+                    reasonRoll < 0.85 ? ExcuseReason.Family : ExcuseReason.Official;
+                var attended = status == AttendanceStatus.Present;
                 db.AttendanceMarks.Add(new AttendanceMark {
                     SlotId = lesson.Slot.Id, Date = lesson.Date, StudentId = student.Id, Status = status,
                     Method = attended && random.NextDouble() < 0.93 ? MarkMethod.Camera : MarkMethod.Manual,
+                    ExcuseReason = status == AttendanceStatus.Excused ? reason : null,
+                    HasDocument = status == AttendanceStatus.Excused && reason == ExcuseReason.Illness && random.NextDouble() < 0.80,
                     MarkedAt = attended
-                        ? lesson.StartsAt.AddMinutes(status == AttendanceStatus.Late ? 12 + random.Next(15) : random.Next(-4, 6)).AddSeconds(random.Next(60))
+                        ? lesson.StartsAt.AddMinutes(random.Next(-4, 6)).AddSeconds(random.Next(60))
                         : lesson.EndsAt.AddMinutes(-random.Next(5))
                 });
+                if (attended && random.NextDouble() < 0.35)
+                    db.LessonGrades.Add(new LessonGrade {
+                        SlotId = lesson.Slot.Id, Date = lesson.Date, StudentId = student.Id,
+                        Score = risk ? random.Next(45, 81) : random.Next(60, 101)
+                    });
+            }
+        }
+        var assessments = await db.ScheduleSlots.AsNoTracking()
+            .Where(x => x.TeacherId == teacher.Id)
+            .Select(x => new { x.GroupId, x.Subject }).Distinct().ToListAsync();
+        foreach (var pair in assessments)
+        {
+            foreach (var (date, title, kind) in new[] {
+                (yesterday.AddDays(-13), "Тест №1", AssessmentKind.Test),
+                (yesterday.AddDays(-6), "Контрольная работа №1", AssessmentKind.ControlWork)
+            })
+            {
+                if (date < start) continue;
+                var assessment = new Assessment {
+                    TeacherId = teacher.Id, GroupId = pair.GroupId, Subject = pair.Subject,
+                    Title = title, Kind = kind, Date = date
+                };
+                db.Assessments.Add(assessment);
+                var members = students.Where(x => x.GroupId == pair.GroupId).OrderBy(_ => random.Next()).ToList();
+                var withoutGrade = Math.Min(members.Count, random.Next(1, 3));
+                foreach (var student in members.Skip(withoutGrade))
+                    assessment.Grades.Add(new AssessmentGrade {
+                        StudentId = student.Id, Score = riskIds.Contains(student.Id) ? random.Next(35, 76) : random.Next(45, 101)
+                    });
             }
         }
         for (var week = 0; week < 4; week++)

@@ -4,7 +4,7 @@ namespace BiStudent;
 
 internal static class Program
 {
-    private static readonly string[] PageKeys = ["today", "camera", "schedule", "journal", "groups", "report"];
+    private static readonly string[] PageKeys = ["today", "camera", "schedule", "journal", "groups", "report", "admin"];
 
     [STAThread]
     private static int Main(string[] args)
@@ -14,6 +14,7 @@ internal static class Program
         CultureInfo.CurrentUICulture = culture;
         CultureInfo.DefaultThreadCurrentCulture = culture;
         CultureInfo.DefaultThreadCurrentUICulture = culture;
+        CrashGuard.Install();
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -25,12 +26,56 @@ internal static class Program
 
         while (true)
         {
-            using var login = new LoginForm();
-            if (login.ShowDialog() != DialogResult.OK || login.Api is null) return 0;
-            using var api = login.Api;
-            using var main = new MainForm(api);
-            Application.Run(main);
-            if (!main.SignedOut) return 0;
+            var settings = ClientSettings.Load();
+            ApiClient? resumed = null;
+            string? loginError = null;
+            if (settings.RememberMe && settings.LoadRefreshToken() is { } token)
+            {
+                try
+                {
+                    resumed = new ApiClient(settings);
+                    resumed.RefreshTokenChanged += value => { settings.StoreRefreshToken(value); settings.Save(); };
+                    if (!Task.Run(() => resumed.TryResumeAsync(token)).GetAwaiter().GetResult())
+                    {
+                        resumed.Dispose();
+                        resumed = null;
+                        settings.StoreRefreshToken(null);
+                        settings.Save();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    resumed?.Dispose();
+                    resumed = null;
+                    loginError = ex.Message;
+                }
+            }
+            ApiClient api;
+            if (resumed is not null) api = resumed;
+            else
+            {
+                using var login = new LoginForm(loginError);
+                if (login.ShowDialog() != DialogResult.OK || login.Api is null) return 0;
+                api = login.Api;
+            }
+            using (api)
+            {
+                if (api.Teacher?.MustChangePassword == true)
+                {
+                    using var change = new ChangePasswordDialog(api, forced: true);
+                    if (change.ShowDialog() != DialogResult.OK)
+                    {
+                        api.EndSession();
+                        var saved = ClientSettings.Load();
+                        saved.StoreRefreshToken(null);
+                        saved.Save();
+                        continue;
+                    }
+                }
+                using var main = new MainForm(api);
+                Application.Run(main);
+                if (!main.SignedOut) return 0;
+            }
         }
     }
 
@@ -89,7 +134,7 @@ internal static class Program
             {
                 await api.LoginAsync(login, password);
                 await api.LoadMeAsync();
-                foreach (var key in PageKeys)
+                foreach (var key in PageKeys.Where(key => key != "admin" || api.Teacher?.IsAdmin == true))
                 {
                     await form.ShowPageAsync(key);
                     if (form.LastPageError is { } error) throw new InvalidOperationException($"Страница {key}: {error}");
