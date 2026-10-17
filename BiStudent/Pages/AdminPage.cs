@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using BiStudent.Contracts;
 
 namespace BiStudent;
@@ -137,7 +138,15 @@ internal sealed class AdminPage : Page
             9.5f, Theme.Muted), 0, 2);
         dialog.Content.Controls.Add(layout);
         var copy = new ModernButton { Text = "Скопировать", Width = 145 };
-        copy.Click += (_, _) => { Clipboard.SetText(password.Password); Ui.Toast(dialog, "Пароль скопирован"); };
+        copy.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(password.Password);
+                Ui.Toast(dialog, "Пароль скопирован");
+            }
+            catch (ExternalException) { Ui.Toast(dialog, "Не удалось скопировать — буфер обмена занят", true); }
+        };
         dialog.Buttons.Controls.Add(copy);
         dialog.AddButton("Закрыть", DialogResult.OK, primary: true);
         dialog.ShowDialog(FindForm());

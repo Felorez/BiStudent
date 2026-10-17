@@ -40,7 +40,7 @@ public sealed class RecognitionService(IServiceScopeFactory scopes, IDataProtect
 
     public void Invalidate()
     {
-        lock (gate) { revision++; streaks.Clear(); }
+        lock (gate) { revision++; streaks.Clear(); settingsCache = null; }
     }
 
     private static bool ValidThreshold(double value) => double.IsFinite(value) && value is >= 0.30 and <= 0.70;
@@ -57,7 +57,8 @@ public sealed class RecognitionService(IServiceScopeFactory scopes, IDataProtect
 
     private async Task<RecognitionSettingsDto> LoadSettingsAsync()
     {
-        lock (gate) { if (settingsCache is not null) return settingsCache; }
+        int startRevision;
+        lock (gate) { if (settingsCache is not null) return settingsCache; startRevision = revision; }
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var values = await db.AppSettings.AsNoTracking().ToDictionaryAsync(x => x.Key, x => x.Value);
@@ -72,7 +73,8 @@ public sealed class RecognitionService(IServiceScopeFactory scopes, IDataProtect
             && ValidFrames(parsedFrames) ? parsedFrames : configuration.GetValue("Recognition:FramesInRow", 3);
         if (!ValidFrames(frames)) frames = 3;
         var loaded = new RecognitionSettingsDto(threshold, margin, frames);
-        lock (gate) return settingsCache ??= loaded;
+        // Если за время чтения был Invalidate (восстановление базы), прочитанное могло устареть — не кешируем.
+        lock (gate) return revision == startRevision ? settingsCache ??= loaded : loaded;
     }
 
     public async Task<RecognitionSettingsDto> SaveSettingsAsync(RecognitionSettingsDto settings)
@@ -148,10 +150,18 @@ public sealed class RecognitionService(IServiceScopeFactory scopes, IDataProtect
         var students = await db.Students.AsNoTracking().Select(x => new { x.Id, x.FullName, x.GroupId }).ToDictionaryAsync(x => x.Id);
         var marked = await db.AttendanceMarks.AsNoTracking().Where(x => x.SlotId == slotId && x.Date == date)
             .Select(x => x.StudentId).ToListAsync();
-        if (ImageHeader.Validate(jpeg) is { } invalid) return new RecognitionResultDto([], 0, 0, invalid);
+        if (ImageHeader.Validate(jpeg) is { } invalid)
+        {
+            lock (gate) streaks.Remove((teacherId, slotId, date));
+            return new RecognitionResultDto([], 0, 0, invalid);
+        }
         var settings = await GetSettingsAsync();
         using var frame = Cv2.ImDecode(jpeg, ImreadModes.Color);
-        if (frame.Empty()) return new RecognitionResultDto([], 0, 0, "Не удалось прочитать кадр JPEG.");
+        if (frame.Empty())
+        {
+            lock (gate) streaks.Remove((teacherId, slotId, date));
+            return new RecognitionResultDto([], 0, 0, "Не удалось прочитать кадр JPEG.");
+        }
         IReadOnlyList<FaceMatch>? matches = null;
         HashSet<int> ready = [];
         try
@@ -170,7 +180,14 @@ public sealed class RecognitionService(IServiceScopeFactory scopes, IDataProtect
                     .Select(x => x.StudentId!.Value).ToHashSet();
                 ready.Clear();
                 var key = (teacherId, slotId, date);
-                if (!streaks.TryGetValue(key, out var counts)) streaks[key] = counts = [];
+                if (!streaks.TryGetValue(key, out var counts))
+                {
+                    // Чистим по серверной дате, а не по дате из запроса; предел размера — на случай произвольных дат.
+                    var cutoff = DateOnly.FromDateTime(DateTime.Now).AddDays(-1);
+                    foreach (var old in streaks.Keys.Where(x => x.Date < cutoff).ToArray()) streaks.Remove(old);
+                    if (streaks.Count >= 1000) streaks.Clear();
+                    streaks[key] = counts = [];
+                }
                 foreach (var id in counts.Keys.Except(eligible).ToArray()) counts.Remove(id);
                 foreach (var id in eligible)
                 {

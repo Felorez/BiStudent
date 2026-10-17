@@ -5,6 +5,7 @@ using BiStudent.Contracts;
 using BiStudent.Server.Data;
 using BiStudent.Server.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace BiStudent.Server.Endpoints;
@@ -164,7 +165,7 @@ public static class ApiEndpoints
             await EnsureSlotAsync(db, user, slotId);
             var count = 0;
             foreach (var row in (await attendance.ForLessonAsync(slotId, date)).Where(r => r.Status is null))
-                if (await attendance.MarkAsync(slotId, date, row.StudentId, AttendanceStatus.Present, MarkMethod.Manual)) count++;
+                if (await attendance.MarkAsync(slotId, date, row.StudentId, AttendanceStatus.Present, MarkMethod.Manual, onlyIfUnmarked: true)) count++;
             return new CountResult(count);
         });
 
@@ -210,6 +211,7 @@ public static class ApiEndpoints
     internal static async ValueTask<object?> HandleErrorsAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         try { return await next(context); }
+        catch (DbUpdateException ex) when (ex.InnerException is SqliteException { SqliteErrorCode: 19 }) { return Results.Json(new ErrorDto("Данные одновременно изменил другой запрос — обновите и повторите."), statusCode: StatusCodes.Status409Conflict); }
         catch (InvalidOperationException ex) { return Results.Json(new ErrorDto(ex.Message), statusCode: StatusCodes.Status400BadRequest); }
         catch (KeyNotFoundException ex) { return Results.Json(new ErrorDto(ex.Message), statusCode: StatusCodes.Status404NotFound); }
         catch (UnauthorizedAccessException ex) { return Results.Json(new ErrorDto(ex.Message), statusCode: StatusCodes.Status403Forbidden); }

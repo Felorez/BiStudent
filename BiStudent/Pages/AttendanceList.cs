@@ -142,7 +142,7 @@ internal sealed class AttendanceList : Panel
                 var bounds = new Rectangle(0, i * RowHeight, Width, RowHeight);
                 if (owner.flashes.TryGetValue(row.StudentId, out var started))
                 {
-                    var alpha = (int)Math.Max(0, 110 * (1 - (DateTime.Now - started).TotalSeconds / 1.8));
+                    var alpha = (int)Math.Clamp(110 * (1 - (DateTime.Now - started).TotalSeconds / 1.8), 0, 110);
                     Ui.FillRounded(g, Rectangle.Inflate(bounds, -2, -3), 10, Color.FromArgb(alpha, Theme.Green));
                 }
                 else if (owner.hover is var (hoverRow, _) && hoverRow == i) Ui.FillRounded(g, Rectangle.Inflate(bounds, -2, -3), 10, Theme.SurfaceHover);

@@ -78,15 +78,27 @@ internal sealed class ApiClient : IDisposable
 
     public async Task ChangePasswordAsync(string current, string next)
     {
-        await _tokenLock.WaitAsync();
-        try
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var generation = Volatile.Read(ref _generation);
-            var token = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/change-password",
-                Json(new ChangePasswordRequest(current, next)));
-            SetTokens(token, generation);
+            string? failedToken = null;
+            await _tokenLock.WaitAsync();
+            try
+            {
+                var generation = Volatile.Read(ref _generation);
+                failedToken = _accessToken;
+                var token = await RequestAsync<TokenResponse>(HttpMethod.Post, "api/auth/change-password",
+                    Json(new ChangePasswordRequest(current, next)));
+                SetTokens(token, generation);
+                break;
+            }
+            catch (ApiException ex) when (attempt == 0 && ex.StatusCode == HttpStatusCode.Unauthorized && failedToken is not null) { }
+            finally { _tokenLock.Release(); }
+            if (!await RefreshAfterUnauthorizedAsync(failedToken!, CancellationToken.None))
+            {
+                RaiseUnauthorized();
+                throw new ApiException(HttpStatusCode.Unauthorized, "Сессия истекла — войдите снова.");
+            }
         }
-        finally { _tokenLock.Release(); }
         try { await LoadMeAsync(); }
         catch (Exception)
         {

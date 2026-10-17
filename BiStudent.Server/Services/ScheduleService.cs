@@ -132,6 +132,7 @@ public sealed class ScheduleService(AppDbContext db, IConfiguration configuratio
 
     public async Task<int> ImportCsvAsync(int teacherId, Stream csv)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync();
         using var reader = new StreamReader(csv, leaveOpen: true);
         var errors = new List<string>();
         var added = 0;
@@ -169,7 +170,12 @@ public sealed class ScheduleService(AppDbContext db, IConfiguration configuratio
             }
             catch (Exception ex) { errors.Add($"Строка {line}: {ex.Message}"); }
         }
-        if (errors.Count > 0) throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+        if (errors.Count > 0)
+        {
+            await transaction.RollbackAsync();
+            throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
+        }
+        await transaction.CommitAsync();
         return added;
     }
 }

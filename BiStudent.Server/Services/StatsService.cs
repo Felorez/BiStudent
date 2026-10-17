@@ -100,7 +100,9 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
                 x.Assessment.Date >= from && x.Assessment.Date <= today)
             .Select(x => x.Score).ToListAsync();
         var scores = lessonScores.Concat(assessmentScores).ToList();
-        var pending = await db.FaceSubmissions.CountAsync(x => x.Status == FaceSubmissionStatus.Pending);
+        var pending = await db.FaceSubmissions.CountAsync(x => x.Status == FaceSubmissionStatus.Pending &&
+            (!db.ScheduleSlots.Any(slot => slot.GroupId == x.Student.GroupId) ||
+                db.ScheduleSlots.Any(slot => slot.GroupId == x.Student.GroupId && slot.TeacherId == teacherId)));
         return new DashboardStats(todayLessons.Count(x => !x.Cancelled), next,
             Percent(occurrences.Where(x => x.Date >= last7), students), Percent(occurrences, students),
             groups, risk.OrderBy(x => x.Percent).ToList(), camera7, camera30,

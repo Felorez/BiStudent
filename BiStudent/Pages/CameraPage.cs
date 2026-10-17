@@ -27,6 +27,7 @@ internal sealed class CameraPage : Page
     private readonly System.Windows.Forms.Timer refresh = new() { Interval = 2000 };
     private readonly SemaphoreSlim attendanceWrite = new(1, 1);
     private LessonDto? selectedLesson;
+    private DateOnly? loadedDate;
     private AutomationSettingsDto? automation;
     private RecognitionResultDto? lastResult;
     private DateTime resultAt;
@@ -114,7 +115,13 @@ internal sealed class CameraPage : Page
         stop.Click += async (_, _) => await StopAsync();
         finish.Click += async (_, _) => await FinishAsync();
         attendance.StatusChosen += MarkAsync;
-        refresh.Tick += async (_, _) => await RefreshAttendanceAsync();
+        attendance.GradeChosen += GradeAsync;
+        refresh.Tick += async (_, _) =>
+        {
+            if (loading) return;
+            if (!running && loadedDate != DateOnly.FromDateTime(DateTime.Now)) await RunAsync(LoadAsync);
+            else await RefreshAttendanceAsync();
+        };
         SetControls();
     }
 
@@ -159,6 +166,8 @@ internal sealed class CameraPage : Page
             if (choice is not null)
                 lessons.SelectedIndex = day.FindIndex(item => ReferenceEquals(item, choice));
             selectedLesson = choice;
+            attendance.SetRows([]);
+            SetStatistics([]);
             students.Caption = choice?.Slot.GroupName ?? "Студенты группы";
             placeholder.Text = choice is null
                 ? "Сегодня занятий нет"
@@ -174,6 +183,7 @@ internal sealed class CameraPage : Page
             }
             indicator.Text = choice is null ? "Сегодня занятий нет" : devices.Count == 0 ? "Камера не найдена" : "Камера выключена";
             await RefreshAttendanceAsync();
+            loadedDate = date;
             if (!IsDisposed && !leftPage) refresh.Start();
         }
         finally
@@ -256,6 +266,19 @@ internal sealed class CameraPage : Page
             manualBusy = false;
             if (!IsDisposed) SetControls();
         }
+    }
+
+    private async Task GradeAsync(AttendanceRowDto row)
+    {
+        if (selectedLesson is not { } lesson) return;
+        var column = new JournalColumnDto(JournalColumnKind.Lesson, lesson.Slot.Id, lesson.Date,
+            lesson.Slot.Start, lesson.Slot.Subject);
+        var cell = new JournalCellDto(row.Status, row.Reason, row.Comment, row.Score);
+        using var editor = new GradeEditor(Api, column, cell, row.StudentId, row.FullName, scoreOnly: true, attendance: row);
+        var changed = false;
+        editor.Saved += () => changed = true;
+        editor.ShowDialog(FindForm(), Cursor.Position);
+        if (changed) await RefreshAttendanceAsync();
     }
 
     private async Task FinishAsync()

@@ -181,8 +181,8 @@ internal sealed class GradeEditor : IDisposable
     {
         var screen = Screen.FromPoint(near).WorkingArea;
         shell.StartPosition = FormStartPosition.Manual;
-        shell.Location = new Point(Math.Clamp(near.X, screen.Left, screen.Right - shell.Width),
-            Math.Clamp(near.Y, screen.Top, screen.Bottom - shell.Height));
+        shell.Location = new Point(Math.Max(screen.Left, Math.Min(near.X, screen.Right - shell.Width)),
+            Math.Max(screen.Top, Math.Min(near.Y, screen.Bottom - shell.Height)));
         return shell.ShowDialog(owner);
     }
 

@@ -33,6 +33,7 @@ public sealed class ScheduleImportService(AppDbContext db, AccountService accoun
         if (Monday(semester) != parsed.SemesterStart)
             warnings.Add($"Начало семестра в файле — {parsed.SemesterStart:dd.MM.yyyy}, в настройках сервера — {semester:dd.MM.yyyy}. Недели считаются по файлу.");
 
+        await using var transaction = await db.Database.BeginTransactionAsync();
         var groupsCreated = 0;
         var groupIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var name in lessons.Select(x => x.Group).Distinct())
@@ -90,6 +91,7 @@ public sealed class ScheduleImportService(AppDbContext db, AccountService accoun
             added++;
         }
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
         return new ScheduleImportResultDto(added, skipped, groupsCreated, teachers, warnings);
     }
 
@@ -108,10 +110,14 @@ public sealed class ScheduleImportService(AppDbContext db, AccountService accoun
 
     private static DateOnly Monday(DateOnly date) => date.AddDays(-(((int)date.DayOfWeek + 6) % 7));
 
-    private async Task<string> FreeLoginAsync(string login)
+    internal async Task<string> FreeLoginAsync(string login)
     {
         var candidate = login;
-        for (var i = 2; await db.Teachers.AnyAsync(x => x.Login.ToLower() == candidate.ToLower()); i++) candidate = $"{login}{i}";
+        for (var i = 2; await db.Teachers.AnyAsync(x => x.Login.ToLower() == candidate.ToLower()); i++)
+        {
+            var suffix = i.ToString(CultureInfo.InvariantCulture);
+            candidate = login[..Math.Min(login.Length, 32 - suffix.Length)] + suffix;
+        }
         return candidate;
     }
 

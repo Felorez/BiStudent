@@ -37,7 +37,7 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
     }
 
     public async Task<bool> MarkAsync(int slotId, DateOnly date, int studentId, AttendanceStatus status, MarkMethod method,
-        ExcuseReason? reason = null, string? comment = null, bool hasDocument = false)
+        ExcuseReason? reason = null, string? comment = null, bool hasDocument = false, bool onlyIfUnmarked = false)
     {
         var slot = await db.ScheduleSlots.FindAsync(slotId) ?? throw new KeyNotFoundException("Пара не найдена.");
         if (!await db.Students.AnyAsync(x => x.Id == studentId && x.GroupId == slot.GroupId))
@@ -54,6 +54,7 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
         }
         else { reason = null; comment = null; hasDocument = false; }
         var mark = await db.AttendanceMarks.SingleOrDefaultAsync(x => x.SlotId == slotId && x.Date == date && x.StudentId == studentId);
+        if (onlyIfUnmarked && mark is not null) return false;
         if (mark is not null && (method == MarkMethod.Camera && mark.Method == MarkMethod.Manual ||
             mark.Status == status && mark.Method == method && mark.ExcuseReason == reason &&
             mark.Comment == comment && mark.HasDocument == hasDocument)) return false;
