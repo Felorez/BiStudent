@@ -80,8 +80,9 @@ public static class ApiEndpoints
             var group = await students.AddGroupAsync(request.Name);
             return new GroupDto(group.Id, group.Name, 0, 0);
         });
-        groups.MapDelete("/{id:int}", async (int id, StudentService students) =>
+        groups.MapDelete("/{id:int}", async (int id, ClaimsPrincipal user, AppDbContext db, StudentService students) =>
         {
+            await EnsureGroupAsync(db, user, id);
             await students.DeleteGroupAsync(id);
             return Results.NoContent();
         });
@@ -98,27 +99,44 @@ public static class ApiEndpoints
         });
 
         var students = api.MapGroup("/students");
-        students.MapPost("", async (SaveStudentRequest request, StudentService service) =>
+        students.MapPost("", async (SaveStudentRequest request, ClaimsPrincipal user, AppDbContext db, StudentService service) =>
         {
+            await EnsureGroupAsync(db, user, request.GroupId);
             var student = await service.AddStudentAsync(request.GroupId, request.FullName);
             return new StudentDto(student.Id, student.FullName, student.GroupId, false);
         });
-        students.MapPut("/{id:int}", async (int id, SaveStudentRequest request, AppDbContext db, StudentService service) =>
+        students.MapPut("/{id:int}", async (int id, SaveStudentRequest request, ClaimsPrincipal user, AppDbContext db, StudentService service) =>
         {
+            await using var transaction = await db.Database.BeginTransactionAsync();
             var student = await db.Students.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id) ?? throw new KeyNotFoundException("Студент не найден.");
+            await EnsureGroupAsync(db, user, student.GroupId);
+            if (student.GroupId != request.GroupId)
+            {
+                if (!await db.Groups.AnyAsync(x => x.Id == request.GroupId)) throw new KeyNotFoundException("Группа не найдена.");
+                await EnsureGroupAsync(db, user, request.GroupId);
+            }
             if (student.FullName != request.FullName.Trim()) await service.RenameStudentAsync(id, request.FullName);
             if (student.GroupId != request.GroupId) await service.MoveStudentAsync(id, request.GroupId);
+            await transaction.CommitAsync();
             return Results.NoContent();
         });
-        students.MapDelete("/{id:int}", async (int id, StudentService service) =>
+        students.MapDelete("/{id:int}", async (int id, ClaimsPrincipal user, AppDbContext db, StudentService service) =>
         {
+            var groupId = await db.Students.AsNoTracking().Where(x => x.Id == id).Select(x => (int?)x.GroupId).SingleOrDefaultAsync()
+                ?? throw new KeyNotFoundException("Студент не найден.");
+            await EnsureGroupAsync(db, user, groupId);
             await service.DeleteStudentAsync(id);
             return Results.NoContent();
         });
         students.MapPost("/import", async (HttpRequest request, StudentService service) => await service.ImportAsync(request.Body))
             .WithMetadata(new RequestSizeLimitAttribute(10 * 1024 * 1024));
-        students.MapPost("/{id:int}/enroll", async (int id, EnrollRequest request, RecognitionService recognition) =>
-            await recognition.EnrollAsync(id, request.Images, request.AllowSimilar)).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
+        students.MapPost("/{id:int}/enroll", async (int id, EnrollRequest request, ClaimsPrincipal user, AppDbContext db, RecognitionService recognition) =>
+        {
+            var groupId = await db.Students.AsNoTracking().Where(x => x.Id == id).Select(x => (int?)x.GroupId).SingleOrDefaultAsync()
+                ?? throw new KeyNotFoundException("Студент не найден.");
+            await EnsureGroupAsync(db, user, groupId);
+            return await recognition.EnrollAsync(id, request.Images, request.AllowSimilar);
+        }).WithMetadata(new RequestSizeLimitAttribute(8 * 1024 * 1024));
 
         var lessons = api.MapGroup("/lessons/{slotId:int}/{date}");
         lessons.MapGet("/attendance", async (int slotId, DateOnly date, ClaimsPrincipal user, AppDbContext db, AttendanceService attendance) =>
@@ -209,6 +227,16 @@ public static class ApiEndpoints
             throw new KeyNotFoundException("Пара не найдена в вашем расписании.");
     }
 
+    /// Менять состав группы может администратор, преподаватель с парами в ней или любой — если у группы ещё нет расписания.
+    internal static async Task EnsureGroupAsync(AppDbContext db, ClaimsPrincipal user, int groupId)
+    {
+        if (user.HasClaim("bistudent:admin", "true")) return;
+        var teacherId = TeacherId(user);
+        if (await db.ScheduleSlots.AnyAsync(x => x.GroupId == groupId && x.TeacherId == teacherId) ||
+            !await db.ScheduleSlots.AnyAsync(x => x.GroupId == groupId)) return;
+        throw new UnauthorizedAccessException("Группа не входит в ваше расписание.");
+    }
+
     private static async Task<IResult> SaveSlotAsync(int? id, SaveSlotRequest request, ClaimsPrincipal user,
         AppDbContext db, ScheduleService service, StudentService students, IConfiguration configuration)
     {
@@ -226,8 +254,8 @@ public static class ApiEndpoints
             Room = string.IsNullOrWhiteSpace(request.Room) ? null : request.Room.Trim(),
             DayOfWeek = request.OneOffDate?.DayOfWeek ?? request.DayOfWeek, Start = request.Start, End = request.End,
             Parity = request.OneOffDate is null ? request.Parity : WeekParity.Every,
-            ValidFrom = request.OneOffDate ?? existing?.ValidFrom ?? semester,
-            ValidTo = request.OneOffDate ?? existing?.ValidTo, OneOffDate = request.OneOffDate
+            ValidFrom = request.OneOffDate ?? (existing?.OneOffDate is not null ? semester : existing?.ValidFrom ?? semester),
+            ValidTo = request.OneOffDate ?? (existing?.OneOffDate is not null ? null : existing?.ValidTo), OneOffDate = request.OneOffDate
         };
         if (existing is null) slot = await service.AddSlotAsync(slot);
         else await service.UpdateSlotAsync(slot);

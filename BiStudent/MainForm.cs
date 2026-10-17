@@ -148,11 +148,14 @@ internal sealed class MainForm : DarkForm
         return ShowPageAsync("camera");
     }
 
-    internal Task OpenLessonAsync(LessonDto lesson)
+    internal async Task OpenLessonAsync(LessonDto lesson)
     {
+        var page = current;
         using var dialog = new LessonDialog(api, lesson);
         dialog.ShowDialog(this);
-        return current?.LoadAsync() ?? Task.CompletedTask;
+        if (page is null || !ReferenceEquals(current, page) || page.IsDisposed || IsDisposed) return;
+        try { await page.LoadAsync(); }
+        catch (ApiException ex) { if (!IsDisposed) Ui.Toast(this, ex.Message, true); }
     }
 
     private void SignOut()

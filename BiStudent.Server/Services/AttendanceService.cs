@@ -127,10 +127,14 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
         subject = string.IsNullOrWhiteSpace(subject) ? null : subject.Trim();
         var lessonTo = to < DateOnly.FromDateTime(DateTime.Now) ? to : DateOnly.FromDateTime(DateTime.Now);
         var occurrences = new List<LessonOccurrence>();
-        for (var day = from; day <= lessonTo; day = day.AddDays(1))
-            occurrences.AddRange((await schedule.ForDayAsync(teacherId, day)).Where(x =>
-                !x.Cancelled && x.Slot.GroupId == groupId &&
-                (subject is null || x.Slot.Subject == subject) && x.EndsAt <= DateTime.Now));
+        var firstSlotDate = await db.ScheduleSlots.AsNoTracking()
+            .Where(x => x.TeacherId == teacherId && x.GroupId == groupId)
+            .OrderBy(x => x.ValidFrom).Select(x => (DateOnly?)x.ValidFrom).FirstOrDefaultAsync();
+        if (firstSlotDate is { } firstDate)
+            for (var day = from > firstDate ? from : firstDate; day <= lessonTo; day = day.AddDays(1))
+                occurrences.AddRange((await schedule.ForDayAsync(teacherId, day)).Where(x =>
+                    !x.Cancelled && x.Slot.GroupId == groupId &&
+                    (subject is null || x.Slot.Subject == subject) && x.EndsAt <= DateTime.Now));
         var assessmentsQuery = db.Assessments.AsNoTracking()
             .Where(x => x.TeacherId == teacherId && x.GroupId == groupId && x.Date >= from && x.Date <= to);
         if (subject is not null) assessmentsQuery = assessmentsQuery.Where(x => x.Subject == subject);

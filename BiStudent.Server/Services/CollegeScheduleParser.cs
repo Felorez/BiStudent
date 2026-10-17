@@ -60,8 +60,8 @@ public static partial class CollegeScheduleParser
             var dayCell = sheet.Cell(row, dayColumn);
             var day = ParseDay(Text(dayCell.MergedRange()?.FirstCell() ?? dayCell));
             if (day is not DayOfWeek weekday) continue;
-            var start = TimeOnly.ParseExact(times[0].Value, "HH:mm", CultureInfo.InvariantCulture);
-            var end = TimeOnly.ParseExact(times[1].Value, "HH:mm", CultureInfo.InvariantCulture);
+            var start = TimeOnly.ParseExact(times[0].Value, ["H:mm", "HH:mm"], CultureInfo.InvariantCulture);
+            var end = TimeOnly.ParseExact(times[1].Value, ["H:mm", "HH:mm"], CultureInfo.InvariantCulture);
             var subjectCell = sheet.Cell(row, column);
             var subjectText = Text(subjectCell);
             if (subjectText.Length == 0) continue;
@@ -127,10 +127,19 @@ public static partial class CollegeScheduleParser
         var result = new List<(int, int, bool)>();
         foreach (var raw in text.Split(','))
         {
-            var token = raw.Trim();
+            var token = raw.Trim().Replace('–', '-').Replace('—', '-');
             if (token.Length == 0) continue;
             var once = token.Contains("разово", StringComparison.OrdinalIgnoreCase);
-            var numbers = Regex.Matches(token, @"\d+").Select(x => int.Parse(x.Value, CultureInfo.InvariantCulture)).ToList();
+            var numbers = new List<int>();
+            foreach (Match match in Regex.Matches(token, @"\d+"))
+            {
+                if (!int.TryParse(match.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n))
+                {
+                    numbers.Clear();
+                    break;
+                }
+                numbers.Add(n);
+            }
             if (numbers.Count == 0 || numbers.Any(x => x is < 1 or > 60)) continue;
             var from = numbers[0];
             var to = numbers.Count > 1 && token.Contains('-') ? numbers[1] : from;
@@ -212,7 +221,7 @@ public static partial class CollegeScheduleParser
     [GeneratedRegex(@"^\[([^\]]+)\]")]
     private static partial Regex TagPattern();
 
-    [GeneratedRegex(@"нед\.?\s*,?\s*(?<weeks>\d[\d\s,\-–()а-яё]*)$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"нед\.?\s*,?\s*(?<weeks>\d[\d\s,\-–—()а-яё]*)$", RegexOptions.IgnoreCase)]
     private static partial Regex WeeksPattern();
 
     [GeneratedRegex(@"\s-\s*(?<weeks>\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*)$")]

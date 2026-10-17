@@ -49,7 +49,11 @@ internal sealed class TodayPage : Page
         {
             using var dialog = new FaceSubmissionsDialog(Api);
             dialog.ShowDialog(FindForm());
-            if (dialog.Changed) await LoadAsync();
+            if (dialog.Changed && !IsDisposed)
+            {
+                try { await LoadAsync(); }
+                catch (ApiException ex) { if (!IsDisposed) Ui.Toast(this, ex.Message, true); }
+            }
         };
         pending.Padding = new Padding(18, 10, 18, 10);
         pendingText.Dock = DockStyle.Fill;
