@@ -36,8 +36,15 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
         var todayLessons = await schedule.ForDayAsync(teacherId, today);
         var next = todayLessons.FirstOrDefault(x => !x.Cancelled && x.EndsAt > now);
         var groupIds = occurrences.Select(x => x.Slot.GroupId).Distinct().ToArray();
-        var students = await db.Students.AsNoTracking().Include(x => x.Group)
+        var memberships = await db.MembershipsDuring(from, today).AsNoTracking()
             .Where(x => groupIds.Contains(x.GroupId)).ToListAsync();
+        var studentIds = memberships.Select(x => x.StudentId).Distinct().ToArray();
+        var students = await db.Students.AsNoTracking().Include(x => x.Group)
+            .Where(x => studentIds.Contains(x.Id)).ToListAsync();
+        var membershipMap = memberships.GroupBy(x => x.StudentId).ToDictionary(x => x.Key, x => x.ToList());
+        bool InGroup(int studentId, int groupId, DateOnly date) =>
+            membershipMap.TryGetValue(studentId, out var periods) &&
+            periods.Any(x => x.GroupId == groupId && x.From <= date && (x.To is null || x.To >= date));
         var slotIds = occurrences.Select(x => x.Slot.Id).Distinct().ToArray();
         var marks = await db.AttendanceMarks.AsNoTracking()
             .Where(x => slotIds.Contains(x.SlotId) && x.Date >= from && x.Date <= today).ToListAsync();
@@ -50,7 +57,7 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
             foreach (var lesson in lessons)
                 foreach (var person in people)
                 {
-                    if (person.GroupId != lesson.Slot.GroupId) continue;
+                    if (!InGroup(person.Id, lesson.Slot.GroupId, lesson.Date)) continue;
                     possible++;
                     if (markMap.TryGetValue((lesson.Slot.Id, lesson.Date, person.Id), out var mark) &&
                         mark.Status == AttendanceStatus.Present) attended++;
@@ -58,13 +65,16 @@ public sealed class StatsService(AppDbContext db, ScheduleService schedule, ICon
             return possible == 0 ? 0 : 100d * attended / possible;
         }
 
-        var groups = students.GroupBy(x => x.GroupId).Select(group =>
-            new GroupAttendance(group.Key, group.First().Group.Name,
-                Percent(occurrences.Where(x => x.Slot.GroupId == group.Key), group))).OrderBy(x => x.GroupName).ToList();
+        var groupNames = await db.Groups.AsNoTracking().Where(x => groupIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.Name }).ToListAsync();
+        var groups = groupNames.Select(group =>
+            new GroupAttendance(group.Id, group.Name,
+                Percent(occurrences.Where(x => x.Slot.GroupId == group.Id), students))).OrderBy(x => x.GroupName).ToList();
         var risk = new List<AtRiskStudent>();
         foreach (var student in students)
         {
-            var lessons = occurrences.Where(x => x.Slot.GroupId == student.GroupId).OrderBy(x => x.StartsAt).ToList();
+            var lessons = occurrences.Where(x => InGroup(student.Id, x.Slot.GroupId, x.Date))
+                .OrderBy(x => x.StartsAt).ToList();
             var percent = Percent(lessons, new[] { student });
             var missed = 0;
             var longest = 0;

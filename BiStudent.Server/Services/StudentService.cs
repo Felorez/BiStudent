@@ -70,6 +70,24 @@ public sealed class StudentService(AppDbContext db, RecognitionService recogniti
         if (!await db.Groups.AnyAsync(x => x.Id == groupId)) throw new KeyNotFoundException("Группа не найдена.");
         if (await db.Students.AnyAsync(x => x.Id != id && x.GroupId == groupId && x.FullName == student.FullName))
             throw new InvalidOperationException("Студент уже есть в группе.");
+        if (student.GroupId == groupId) return;
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var open = await db.GroupMemberships.FirstOrDefaultAsync(x => x.StudentId == id && x.To == null);
+        if (open is null)
+        {
+            if (!await db.GroupMemberships.AnyAsync(x => x.StudentId == id))
+                db.GroupMemberships.Add(new GroupMembership {
+                    StudentId = id, GroupId = student.GroupId, From = DateOnly.MinValue, To = today.AddDays(-1)
+                });
+            db.GroupMemberships.Add(new GroupMembership { StudentId = id, GroupId = groupId, From = today });
+        }
+        else if (open.From >= today)
+            open.GroupId = groupId;
+        else
+        {
+            open.To = today.AddDays(-1);
+            db.GroupMemberships.Add(new GroupMembership { StudentId = id, GroupId = groupId, From = today });
+        }
         student.GroupId = groupId;
         await db.SaveChangesAsync();
     }

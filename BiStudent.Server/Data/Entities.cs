@@ -31,6 +31,18 @@ public sealed class Student
     public Group Group { get; set; } = null!;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public List<FaceSample> Samples { get; set; } = [];
+    public List<GroupMembership> Memberships { get; set; } = [];
+}
+
+public sealed class GroupMembership
+{
+    public int Id { get; set; }
+    public int StudentId { get; set; }
+    public Student Student { get; set; } = null!;
+    public int GroupId { get; set; }
+    public Group Group { get; set; } = null!;
+    public DateOnly From { get; set; }
+    public DateOnly? To { get; set; }
 }
 
 public sealed class FaceSample

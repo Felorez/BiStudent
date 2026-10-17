@@ -323,6 +323,34 @@ namespace BiStudent.Server.Data.Migrations
                     b.ToTable("Groups");
                 });
 
+            modelBuilder.Entity("BiStudent.Server.Data.GroupMembership", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateOnly>("From")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("GroupId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("StudentId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateOnly?>("To")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupId");
+
+                    b.HasIndex("StudentId", "From")
+                        .IsUnique();
+
+                    b.ToTable("GroupMemberships");
+                });
+
             modelBuilder.Entity("BiStudent.Server.Data.LessonGrade", b =>
                 {
                     b.Property<int>("Id")
@@ -641,6 +669,25 @@ namespace BiStudent.Server.Data.Migrations
                     b.Navigation("Teacher");
                 });
 
+            modelBuilder.Entity("BiStudent.Server.Data.GroupMembership", b =>
+                {
+                    b.HasOne("BiStudent.Server.Data.Group", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("BiStudent.Server.Data.Student", "Student")
+                        .WithMany("Memberships")
+                        .HasForeignKey("StudentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+
+                    b.Navigation("Student");
+                });
+
             modelBuilder.Entity("BiStudent.Server.Data.LessonGrade", b =>
                 {
                     b.HasOne("BiStudent.Server.Data.ScheduleSlot", "Slot")
@@ -723,6 +770,8 @@ namespace BiStudent.Server.Data.Migrations
 
             modelBuilder.Entity("BiStudent.Server.Data.Student", b =>
                 {
+                    b.Navigation("Memberships");
+
                     b.Navigation("Samples");
                 });
 #pragma warning restore 612, 618

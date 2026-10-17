@@ -313,7 +313,7 @@ public static class ApiEndpoints
         matrix.From, matrix.To, matrix.HoursPerLesson,
         matrix.Columns.Select(c => new JournalColumnDto(c.Kind, c.Id, c.Date, c.Start, c.Subject, c.Title, c.AssessmentKind)).ToList(),
         matrix.Students.Select(s => new JournalStudentDto(s.StudentId, s.FullName,
-            s.Cells.Select(c => new JournalCellDto(c.Status, c.Reason, c.Comment, c.Score)).ToList(),
+            s.Cells.Select(c => new JournalCellDto(c.Status, c.Reason, c.Comment, c.Score, c.InGroup)).ToList(),
             s.Present, s.Absent, s.Excused, s.MissedHours, s.ExcusedHours, s.Percent, s.Average, s.Final)).ToList());
 
     private static async Task<MemoryStream> BufferAsync(HttpRequest request)

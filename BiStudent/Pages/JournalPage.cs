@@ -104,7 +104,7 @@ internal sealed class JournalPage : Page
             if (IsDisposed) return;
             changing = true;
             groups.Items.Clear();
-            foreach (var item in items.Where(x => x.Students > 0)) groups.Items.Add(item);
+            foreach (var item in items) groups.Items.Add(item);
             groups.SelectedItem = groups.Items.Cast<GroupDto>().FirstOrDefault(x => x.Id == selectedId) ?? groups.Items.Cast<GroupDto>().FirstOrDefault();
             changing = false;
             await RefreshAsync(true);
@@ -246,6 +246,12 @@ internal sealed class JournalPage : Page
                 var entry = entries[i];
                 var cell = entry.Index < student.Cells.Count ? student.Cells[entry.Index] : null;
                 var view = row.Cells[i + 2];
+                if (cell is { InGroup: false })
+                {
+                    view.Value = "—";
+                    view.Style.ForeColor = Theme.Muted;
+                    continue;
+                }
                 if (entry.Column.Kind == JournalColumnKind.Lesson)
                     view.ToolTipText = LessonTooltip(entry.Column, cell, null);
                 else
@@ -311,6 +317,15 @@ internal sealed class JournalPage : Page
         var student = grid.Rows[e.RowIndex].Tag as JournalStudentDto;
         if (student is null) return;
         var cell = entry.Index < student.Cells.Count ? student.Cells[entry.Index] : null;
+        if (cell is { InGroup: false })
+        {
+            e.Paint(e.CellBounds, DataGridViewPaintParts.Background | DataGridViewPaintParts.Border);
+            var mutedBounds = new Rectangle(e.CellBounds.X + 10, e.CellBounds.Y, e.CellBounds.Width - 18, e.CellBounds.Height);
+            TextRenderer.DrawText(e.Graphics!, "—", Theme.Font(13, FontStyle.Bold), mutedBounds, Theme.Muted,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            e.Handled = true;
+            return;
+        }
         var status = cell?.Status;
         var color = status switch
         {
@@ -383,6 +398,8 @@ internal sealed class JournalPage : Page
             || FindForm() is not { } owner) return;
         var selected = grid.Columns[columnIndex];
         if (selected.Tag is not JournalEntry && (selected.Name != "final" || SelectedSubject is null)) return;
+        if (selected.Tag is JournalEntry selectedEntry && selectedEntry.Index < student.Cells.Count
+            && !student.Cells[selectedEntry.Index].InGroup) return;
         var bounds = grid.GetCellDisplayRectangle(columnIndex, rowIndex, false);
         var near = grid.PointToScreen(new Point(bounds.Left, bounds.Bottom));
         await ExecuteAsync(async () =>

@@ -76,7 +76,7 @@ public sealed class GradeService(AppDbContext db, IConfiguration configuration)
     private async Task SetGradeCoreAsync(int teacherId, int assessmentId, int studentId, int? score)
     {
         var assessment = await OwnAssessmentAsync(teacherId, assessmentId);
-        await ValidateStudentAsync(assessment.GroupId, studentId);
+        await ValidateStudentAsync(assessment.GroupId, studentId, assessment.Date);
         ValidateScore(score);
         var grade = await db.AssessmentGrades.SingleOrDefaultAsync(x => x.AssessmentId == assessmentId && x.StudentId == studentId);
         if (score is null)
@@ -124,19 +124,22 @@ public sealed class GradeService(AppDbContext db, IConfiguration configuration)
     {
         subject = await ValidateSubjectAsync(teacherId, groupId, subject);
         var semester = DateOnly.Parse(configuration["Semester:Start"] ?? "2026-09-01", CultureInfo.InvariantCulture);
-        var students = await db.Students.AsNoTracking().Where(x => x.GroupId == groupId).Select(x => x.Id).ToListAsync();
+        var periods = await db.GroupMemberships.AsNoTracking().Where(x => x.GroupId == groupId).ToListAsync();
+        var students = periods.Select(x => x.StudentId).Distinct().ToList();
+        bool InGroup(int studentId, DateOnly date) =>
+            periods.Any(x => x.StudentId == studentId && x.From <= date && (x.To == null || x.To >= date));
         var existing = await db.FinalGrades.AsNoTracking()
             .Where(x => x.TeacherId == teacherId && x.GroupId == groupId && x.Subject == subject)
             .Select(x => x.StudentId).ToListAsync();
         var lessonGrades = await db.LessonGrades.AsNoTracking()
             .Where(x => x.Slot.TeacherId == teacherId && x.Slot.GroupId == groupId &&
                 x.Slot.Subject == subject && x.Date >= semester)
-            .Select(x => new { x.StudentId, x.Score }).ToListAsync();
+            .Select(x => new { x.StudentId, x.Score, x.Date }).ToListAsync();
         var assessmentGrades = await db.AssessmentGrades.AsNoTracking()
             .Where(x => x.Assessment.TeacherId == teacherId && x.Assessment.GroupId == groupId &&
                 x.Assessment.Subject == subject && x.Assessment.Date >= semester)
-            .Select(x => new { x.StudentId, x.Score }).ToListAsync();
-        var scores = lessonGrades.Concat(assessmentGrades).GroupBy(x => x.StudentId)
+            .Select(x => new { x.StudentId, x.Score, x.Assessment.Date }).ToListAsync();
+        var scores = lessonGrades.Concat(assessmentGrades).Where(x => InGroup(x.StudentId, x.Date)).GroupBy(x => x.StudentId)
             .ToDictionary(x => x.Key, x => x.Select(y => y.Score).ToList());
         var count = 0;
         foreach (var studentId in students)
@@ -165,9 +168,10 @@ public sealed class GradeService(AppDbContext db, IConfiguration configuration)
         return name;
     }
 
-    private async Task ValidateStudentAsync(int groupId, int studentId)
+    private async Task ValidateStudentAsync(int groupId, int studentId, DateOnly? date = null)
     {
-        if (!await db.Students.AnyAsync(x => x.Id == studentId && x.GroupId == groupId))
+        var members = date is { } day ? db.MembershipsOn(day) : db.GroupMemberships.AsQueryable();
+        if (!await members.AnyAsync(x => x.StudentId == studentId && x.GroupId == groupId))
             throw new InvalidOperationException("Студент не принадлежит группе.");
     }
 

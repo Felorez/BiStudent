@@ -50,7 +50,7 @@ public sealed record FillFinalRequest(string Subject);
 
 public sealed record JournalColumnDto(JournalColumnKind Kind, int Id, DateOnly Date, TimeOnly? Start, string Subject,
     string? Title = null, AssessmentKind? AssessmentKind = null);
-public sealed record JournalCellDto(AttendanceStatus? Status, ExcuseReason? Reason, string? Comment, int? Score);
+public sealed record JournalCellDto(AttendanceStatus? Status, ExcuseReason? Reason, string? Comment, int? Score, bool InGroup = true);
 public sealed record JournalStudentDto(int StudentId, string FullName, List<JournalCellDto> Cells,
     int Present, int Absent, int Excused, int MissedHours, int ExcusedHours, double Percent, double? Average, int? Final);
 public sealed record JournalDto(string TeacherName, string GroupName, string? Subject, DateOnly From, DateOnly To,

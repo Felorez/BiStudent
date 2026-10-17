@@ -19,6 +19,7 @@ public sealed class ExportService(AppDbContext db)
 
     private static string Symbol(JournalCell cell, bool csv = false)
     {
+        if (!cell.InGroup) return "—";
         var status = cell.Status switch
         {
             AttendanceStatus.Present => "П",
@@ -77,6 +78,11 @@ public sealed class ExportService(AppDbContext db)
                 var column = matrix.Columns[i];
                 var value = student.Cells[i];
                 var cell = sheet.Cell(rowNumber, i + 3);
+                if (!value.InGroup)
+                {
+                    cell.Value = "—";
+                    continue;
+                }
                 if (column.Kind == JournalColumnKind.Assessment)
                 {
                     if (value.Score is int score) cell.Value = score;

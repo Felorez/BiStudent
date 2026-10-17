@@ -8,7 +8,7 @@ public sealed record AttendanceRow(int StudentId, string FullName, AttendanceSta
     DateTime? MarkedAt, ExcuseReason? Reason, string? Comment, bool HasDocument, int? Score);
 public sealed record JournalColumn(JournalColumnKind Kind, int Id, DateOnly Date, TimeOnly? Start, string Subject,
     string? Title = null, AssessmentKind? AssessmentKind = null);
-public sealed record JournalCell(AttendanceStatus? Status, ExcuseReason? Reason, string? Comment, bool HasDocument, int? Score);
+public sealed record JournalCell(AttendanceStatus? Status, ExcuseReason? Reason, string? Comment, bool HasDocument, int? Score, bool InGroup = true);
 public sealed record JournalStudent(int StudentId, string FullName, List<JournalCell> Cells,
     int Present, int Absent, int Excused, int MissedHours, int ExcusedHours, double Percent, double? Average, int? Final);
 public sealed record JournalMatrix(string TeacherName, string GroupName, string? Subject, DateOnly From, DateOnly To,
@@ -25,7 +25,8 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
     public async Task<List<AttendanceRow>> ForLessonAsync(int slotId, DateOnly date)
     {
         var slot = await db.ScheduleSlots.FindAsync(slotId) ?? throw new KeyNotFoundException("Пара не найдена.");
-        var students = await db.Students.AsNoTracking().Where(x => x.GroupId == slot.GroupId).OrderBy(x => x.FullName).ToListAsync();
+        var members = db.MembershipsOn(date).Where(x => x.GroupId == slot.GroupId).Select(x => x.StudentId);
+        var students = await db.Students.AsNoTracking().Where(x => members.Contains(x.Id)).OrderBy(x => x.FullName).ToListAsync();
         var marks = await db.AttendanceMarks.AsNoTracking().Where(x => x.SlotId == slotId && x.Date == date).ToDictionaryAsync(x => x.StudentId);
         var grades = await db.LessonGrades.AsNoTracking().Where(x => x.SlotId == slotId && x.Date == date).ToDictionaryAsync(x => x.StudentId);
         return students.Select(x => {
@@ -40,7 +41,7 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
         ExcuseReason? reason = null, string? comment = null, bool hasDocument = false, bool onlyIfUnmarked = false)
     {
         var slot = await db.ScheduleSlots.FindAsync(slotId) ?? throw new KeyNotFoundException("Пара не найдена.");
-        if (!await db.Students.AnyAsync(x => x.Id == studentId && x.GroupId == slot.GroupId))
+        if (!await db.MembershipsOn(date).AnyAsync(x => x.StudentId == studentId && x.GroupId == slot.GroupId))
             throw new InvalidOperationException("Студент не принадлежит группе этой пары.");
         if (!Enum.IsDefined(status)) throw new InvalidOperationException("Неверный статус посещаемости.");
         var now = DateTime.Now;
@@ -78,7 +79,7 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
     public async Task SetLessonGradeAsync(int slotId, DateOnly date, int studentId, int? score)
     {
         var slot = await db.ScheduleSlots.FindAsync(slotId) ?? throw new KeyNotFoundException("Пара не найдена.");
-        if (!await db.Students.AnyAsync(x => x.Id == studentId && x.GroupId == slot.GroupId))
+        if (!await db.MembershipsOn(date).AnyAsync(x => x.StudentId == studentId && x.GroupId == slot.GroupId))
             throw new InvalidOperationException("Студент не принадлежит группе этой пары.");
         if (score is < 1 or > 100) throw new InvalidOperationException("Балл должен быть от 1 до 100.");
         var grade = await db.LessonGrades.SingleOrDefaultAsync(x => x.SlotId == slotId && x.Date == date && x.StudentId == studentId);
@@ -111,7 +112,8 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
     {
         var slot = await db.ScheduleSlots.FindAsync(slotId) ?? throw new KeyNotFoundException("Пара не найдена.");
         var marked = await db.AttendanceMarks.Where(x => x.SlotId == slotId && x.Date == date).Select(x => x.StudentId).ToListAsync();
-        var missing = await db.Students.Where(x => x.GroupId == slot.GroupId && !marked.Contains(x.Id)).Select(x => x.Id).ToListAsync();
+        var missing = await db.MembershipsOn(date).Where(x => x.GroupId == slot.GroupId && !marked.Contains(x.StudentId))
+            .Select(x => x.StudentId).Distinct().ToListAsync();
         var now = DateTime.Now;
         db.AttendanceMarks.AddRange(missing.Select(id => new AttendanceMark {
             SlotId = slotId, Date = date, StudentId = id, Status = AttendanceStatus.Absent, Method = MarkMethod.Manual, MarkedAt = now
@@ -145,7 +147,12 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
             .Concat(assessments.Select(x => new JournalColumn(
                 JournalColumnKind.Assessment, x.Id, x.Date, null, x.Subject, x.Title, x.Kind)))
             .OrderBy(x => x.Date).ThenBy(x => x.Kind).ThenBy(x => x.Start).ThenBy(x => x.Id).ToList();
-        var students = await db.Students.AsNoTracking().Where(x => x.GroupId == groupId).OrderBy(x => x.FullName).ToListAsync();
+        var periods = await db.MembershipsDuring(from, to).AsNoTracking()
+            .Where(x => x.GroupId == groupId).ToListAsync();
+        var studentIds = periods.Select(x => x.StudentId).Distinct().ToArray();
+        var students = await db.Students.AsNoTracking().Where(x => studentIds.Contains(x.Id))
+            .OrderBy(x => x.FullName).ToListAsync();
+        var membershipMap = periods.GroupBy(x => x.StudentId).ToDictionary(x => x.Key, x => x.ToList());
         var slotIds = occurrences.Select(x => x.Slot.Id).Distinct().ToArray();
         var assessmentIds = assessments.Select(x => x.Id).ToArray();
         var marks = await db.AttendanceMarks.AsNoTracking()
@@ -161,9 +168,10 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
         var assessmentGradeMap = assessmentGrades.ToDictionary(x => (x.AssessmentId, x.StudentId));
         var finalMap = finals.ToDictionary(x => x.StudentId, x => x.Score);
         var hours = configuration.GetValue("Attendance:HoursPerLesson", 2);
-        var lessonCount = columns.Count(x => x.Kind == JournalColumnKind.Lesson);
         var rows = students.Select(student => {
             var cells = columns.Select(column => {
+                var inGroup = membershipMap[student.Id].Any(x => x.From <= column.Date && (x.To is null || x.To >= column.Date));
+                if (!inGroup) return new JournalCell(null, null, null, false, null, false);
                 if (column.Kind == JournalColumnKind.Assessment)
                     return new JournalCell(null, null, null, false,
                         assessmentGradeMap.TryGetValue((column.Id, student.Id), out var assessmentGrade) ? assessmentGrade.Score : null);
@@ -171,10 +179,11 @@ public sealed class AttendanceService(AppDbContext db, IConfiguration configurat
                 return new JournalCell(mark?.Status, mark?.ExcuseReason, mark?.Comment, mark?.HasDocument ?? false,
                     lessonGradeMap.TryGetValue((column.Id, column.Date, student.Id), out var lessonGrade) ? lessonGrade.Score : null);
             }).ToList();
-            var present = cells.Count(x => x.Status == AttendanceStatus.Present);
-            var absent = cells.Count(x => x.Status == AttendanceStatus.Absent);
-            var excused = cells.Count(x => x.Status == AttendanceStatus.Excused);
-            var scores = cells.Where(x => x.Score.HasValue).Select(x => x.Score!.Value).ToList();
+            var lessonCount = cells.Where((cell, index) => cell.InGroup && columns[index].Kind == JournalColumnKind.Lesson).Count();
+            var present = cells.Count(x => x.InGroup && x.Status == AttendanceStatus.Present);
+            var absent = cells.Count(x => x.InGroup && x.Status == AttendanceStatus.Absent);
+            var excused = cells.Count(x => x.InGroup && x.Status == AttendanceStatus.Excused);
+            var scores = cells.Where(x => x.InGroup && x.Score.HasValue).Select(x => x.Score!.Value).ToList();
             return new JournalStudent(student.Id, student.FullName, cells, present, absent, excused,
                 (absent + excused) * hours, excused * hours,
                 lessonCount == 0 ? 0 : 100d * present / lessonCount,

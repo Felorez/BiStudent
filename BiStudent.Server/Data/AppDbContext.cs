@@ -8,6 +8,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<Teacher> Teachers => Set<Teacher>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<Student> Students => Set<Student>();
+    public DbSet<GroupMembership> GroupMemberships => Set<GroupMembership>();
     public DbSet<FaceSample> FaceSamples => Set<FaceSample>();
     public DbSet<ScheduleSlot> ScheduleSlots => Set<ScheduleSlot>();
     public DbSet<SlotCancellation> SlotCancellations => Set<SlotCancellation>();
@@ -21,6 +22,42 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<FaceSubmission> FaceSubmissions => Set<FaceSubmission>();
     public DbSet<FaceSubmissionImage> FaceSubmissionImages => Set<FaceSubmissionImage>();
 
+    public IQueryable<GroupMembership> MembershipsOn(DateOnly date) =>
+        GroupMemberships.Where(x => x.From <= date && (x.To == null || x.To >= date));
+
+    public IQueryable<GroupMembership> MembershipsDuring(DateOnly from, DateOnly to) =>
+        GroupMemberships.Where(x => x.From <= to && (x.To == null || x.To >= from));
+
+    private void AddInitialMemberships()
+    {
+        foreach (var entry in ChangeTracker.Entries<Student>().Where(x => x.State == EntityState.Added))
+        {
+            var student = entry.Entity;
+            if (student.Memberships.Count > 0) continue;
+            var membership = new GroupMembership { From = DateOnly.MinValue };
+            if (student.GroupId == 0) membership.Group = student.Group;
+            else membership.GroupId = student.GroupId;
+            student.Memberships.Add(membership);
+        }
+    }
+
+    public override int SaveChanges() => SaveChanges(true);
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        AddInitialMemberships();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
+        SaveChangesAsync(true, cancellationToken);
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        AddInitialMemberships();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
     protected override void OnModelCreating(ModelBuilder model)
     {
         model.Entity<Teacher>().HasIndex(x => x.Login).IsUnique();
@@ -29,6 +66,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         model.Entity<SlotCancellation>().HasIndex(x => new { x.SlotId, x.Date }).IsUnique();
         model.Entity<AttendanceMark>().HasIndex(x => new { x.SlotId, x.Date, x.StudentId }).IsUnique();
         model.Entity<Student>().HasOne(x => x.Group).WithMany(x => x.Students).HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Restrict);
+        model.Entity<GroupMembership>().HasIndex(x => new { x.StudentId, x.From }).IsUnique();
+        model.Entity<GroupMembership>().HasIndex(x => x.GroupId);
+        model.Entity<GroupMembership>().HasOne(x => x.Student).WithMany(x => x.Memberships).HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
+        model.Entity<GroupMembership>().HasOne(x => x.Group).WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Cascade);
         model.Entity<FaceSample>().HasOne(x => x.Student).WithMany(x => x.Samples).HasForeignKey(x => x.StudentId).OnDelete(DeleteBehavior.Cascade);
         model.Entity<ScheduleSlot>().HasOne(x => x.Teacher).WithMany().HasForeignKey(x => x.TeacherId).OnDelete(DeleteBehavior.Restrict);
         model.Entity<ScheduleSlot>().HasOne(x => x.Group).WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Restrict);
