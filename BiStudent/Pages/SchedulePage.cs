@@ -124,7 +124,8 @@ internal sealed class SchedulePage : Page
             if (!Ui.Confirm(FindForm(), "Удалить пару", "Шаблон пары и все её отметки будут удалены. Чтобы убрать одно занятие, лучше отмените его на дату.", "Удалить", true)) return;
             await ExecuteAsync(async () => { await Api.DeleteSlotAsync(lesson.Slot.Id); await RefreshAsync(); });
         };
-        menu.Closed += (_, _) => menu.Dispose();
+        // Удалять меню прямо в Closed нельзя: WinForms ещё закрывает его и падает на удалённом объекте.
+        menu.Closed += (_, _) => { if (IsHandleCreated) BeginInvoke(menu.Dispose); };
         menu.Show(card, new Point(8, card.Height - 4));
     }
 
