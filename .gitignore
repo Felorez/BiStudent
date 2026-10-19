@@ -5,3 +5,13 @@
 **/obj/
 dist/
 *.csproj.user
+*.user
+BiStudent.Server/seed/*.local.csv
+BiStudent.Server/seed/*.local.xlsx
+BiStudent.Server/seed/*.old.csv
+BiStudent.Server/App_Data*/
+
+# Модель SFace скачивается при сборке (см. BiStudent.Core.csproj)
+BiStudent.Core/Models/face_recognition_sface_2021dec.onnx
+BiStudent.Core/Models/*.download
+TestResults/

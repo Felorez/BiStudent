@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>BiStudent</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <!-- Модель SFace (38 МБ) не хранится в git: при первой сборке она скачивается из OpenCV Zoo и проверяется по SHA-256. -->
+  <PropertyGroup>
+    <ModelsDirectory>$(MSBuildThisFileDirectory)Models\</ModelsDirectory>
+    <SFaceModel>$(ModelsDirectory)face_recognition_sface_2021dec.onnx</SFaceModel>
+    <SFaceSha256>0BA9FBFA01B5270C96627C4EF784DA859931E02F04419C829E83484087C34E79</SFaceSha256>
+    <SFaceUrl>https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx</SFaceUrl>
+    <SFaceMirrorUrl>https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx</SFaceMirrorUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="Models\face_detection_yunet_2023mar.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Models\face_recognition_sface_2021dec.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Models\LICENSE-YUNET.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Models\LICENSE-SFACE.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="DownloadSFaceModel" BeforeTargets="BeforeBuild" Condition="!Exists('$(SFaceModel)')">
+    <Message Importance="high" Text="BiStudent: скачиваю модель SFace (38 МБ) из OpenCV Zoo…" />
+    <DownloadFile SourceUrl="$(SFaceUrl)" DestinationFolder="$(ModelsDirectory)" DestinationFileName="face_recognition_sface_2021dec.onnx.download" Retries="3" RetryDelayMilliseconds="3000" ContinueOnError="true" />
+    <DownloadFile SourceUrl="$(SFaceMirrorUrl)" DestinationFolder="$(ModelsDirectory)" DestinationFileName="face_recognition_sface_2021dec.onnx.download" Retries="3" RetryDelayMilliseconds="3000" ContinueOnError="true"
+                  Condition="!Exists('$(SFaceModel).download')" />
+    <Error Condition="!Exists('$(SFaceModel).download')"
+           Text="Не удалось скачать модель SFace. Скачайте её вручную по адресу $(SFaceUrl) и положите в $(SFaceModel)." />
+    <GetFileHash Files="$(SFaceModel).download" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="DownloadedSFaceHash" />
+    </GetFileHash>
+    <Delete Files="$(SFaceModel).download" Condition="'$(DownloadedSFaceHash)' != '$(SFaceSha256)'" />
+    <Error Condition="'$(DownloadedSFaceHash)' != '$(SFaceSha256)'"
+           Text="Скачанная модель SFace не совпадает по SHA-256 (получено $(DownloadedSFaceHash), ожидалось $(SFaceSha256))." />
+    <Move SourceFiles="$(SFaceModel).download" DestinationFiles="$(SFaceModel)" />
+  </Target>
+</Project>

@@ -1,0 +1,169 @@
+using BiStudent.Contracts;
+using ClosedXML.Excel;
+using BiStudent.Server.Data;
+using Microsoft.EntityFrameworkCore;
+
+namespace BiStudent.Server.Services;
+
+public sealed record GroupSummary(int Id, string Name, int Students, int WithFace);
+
+public sealed class StudentService(AppDbContext db, RecognitionService recognition)
+{
+    public Task<List<GroupSummary>> GroupsAsync() => db.Groups.AsNoTracking().OrderBy(x => x.Name)
+        .Select(x => new GroupSummary(x.Id, x.Name, x.Students.Count, x.Students.Count(s => s.Samples.Any()))).ToListAsync();
+
+    public Task<List<Student>> ForGroupAsync(int groupId) => db.Students.AsNoTracking()
+        .Where(x => x.GroupId == groupId).OrderBy(x => x.FullName).ToListAsync();
+
+    public Task<bool> HasFace(int studentId) => db.FaceSamples.AnyAsync(x => x.StudentId == studentId);
+
+    public async Task<HashSet<int>> WithFaceAsync(int groupId) => (await db.FaceSamples.AsNoTracking()
+        .Where(x => x.Student.GroupId == groupId).Select(x => x.StudentId).Distinct().ToListAsync()).ToHashSet();
+
+    public async Task<Group> AddGroupAsync(string name)
+    {
+        name = name.Trim();
+        if (name.Length == 0) throw new InvalidOperationException("Укажите название группы.");
+        if (await db.Groups.AnyAsync(x => x.Name == name)) throw new InvalidOperationException("Такая группа уже есть.");
+        var group = new Group { Name = name };
+        db.Groups.Add(group);
+        await db.SaveChangesAsync();
+        return group;
+    }
+
+    public async Task DeleteGroupAsync(int id)
+    {
+        var group = await db.Groups.FindAsync(id) ?? throw new KeyNotFoundException("Группа не найдена.");
+        if (await db.Students.AnyAsync(x => x.GroupId == id) || await db.ScheduleSlots.AnyAsync(x => x.GroupId == id))
+            throw new InvalidOperationException("Нельзя удалить группу со студентами или расписанием.");
+        db.Groups.Remove(group);
+        await db.SaveChangesAsync();
+    }
+
+    public async Task<Student> AddStudentAsync(int groupId, string fullName)
+    {
+        fullName = fullName.Trim();
+        if (fullName.Length == 0) throw new InvalidOperationException("Укажите ФИО.");
+        if (!await db.Groups.AnyAsync(x => x.Id == groupId)) throw new KeyNotFoundException("Группа не найдена.");
+        if (await db.Students.AnyAsync(x => x.GroupId == groupId && x.FullName == fullName))
+            throw new InvalidOperationException("Студент уже есть в группе.");
+        var student = new Student { GroupId = groupId, FullName = fullName };
+        db.Students.Add(student);
+        await db.SaveChangesAsync();
+        return student;
+    }
+
+    public async Task RenameStudentAsync(int id, string fullName)
+    {
+        var student = await db.Students.FindAsync(id) ?? throw new KeyNotFoundException("Студент не найден.");
+        fullName = fullName.Trim();
+        if (fullName.Length == 0) throw new InvalidOperationException("Укажите ФИО.");
+        if (await db.Students.AnyAsync(x => x.Id != id && x.GroupId == student.GroupId && x.FullName == fullName))
+            throw new InvalidOperationException("Студент уже есть в группе.");
+        student.FullName = fullName;
+        await db.SaveChangesAsync();
+    }
+
+    public async Task MoveStudentAsync(int id, int groupId)
+    {
+        var student = await db.Students.FindAsync(id) ?? throw new KeyNotFoundException("Студент не найден.");
+        if (!await db.Groups.AnyAsync(x => x.Id == groupId)) throw new KeyNotFoundException("Группа не найдена.");
+        if (await db.Students.AnyAsync(x => x.Id != id && x.GroupId == groupId && x.FullName == student.FullName))
+            throw new InvalidOperationException("Студент уже есть в группе.");
+        if (student.GroupId == groupId) return;
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var open = await db.GroupMemberships.FirstOrDefaultAsync(x => x.StudentId == id && x.To == null);
+        if (open is null)
+        {
+            if (!await db.GroupMemberships.AnyAsync(x => x.StudentId == id))
+                db.GroupMemberships.Add(new GroupMembership {
+                    StudentId = id, GroupId = student.GroupId, From = DateOnly.MinValue, To = today.AddDays(-1)
+                });
+            db.GroupMemberships.Add(new GroupMembership { StudentId = id, GroupId = groupId, From = today });
+        }
+        else if (open.From >= today)
+            open.GroupId = groupId;
+        else
+        {
+            open.To = today.AddDays(-1);
+            db.GroupMemberships.Add(new GroupMembership { StudentId = id, GroupId = groupId, From = today });
+        }
+        student.GroupId = groupId;
+        await db.SaveChangesAsync();
+    }
+
+    public async Task DeleteStudentAsync(int id)
+    {
+        var student = await db.Students.FindAsync(id) ?? throw new KeyNotFoundException("Студент не найден.");
+        db.Students.Remove(student);
+        await db.SaveChangesAsync();
+        recognition.Invalidate();
+    }
+
+    /// Список группы из CSV («ФИО;Группа») или из журнала Excel: каждый лист — группа (имя листа), ФИО — в колонке с заголовком «ФИО».
+    public async Task<ImportResultDto> ImportAsync(Stream content)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer);
+        buffer.Position = 0;
+        if (buffer.Length < 2 || buffer.GetBuffer()[0] != (byte)'P' || buffer.GetBuffer()[1] != (byte)'K')
+        {
+            var (added, skipped) = await ImportCsvAsync(buffer);
+            return new ImportResultDto(added, skipped, []);
+        }
+        XLWorkbook workbook;
+        try { workbook = new XLWorkbook(buffer); }
+        catch (Exception ex) { throw new InvalidOperationException("Не удалось прочитать файл Excel.", ex); }
+        using (workbook)
+        {
+            int totalAdded = 0, totalSkipped = 0;
+            var errors = new List<string>();
+            foreach (var sheet in workbook.Worksheets)
+            {
+                var group = System.Text.RegularExpressions.Regex.Replace(sheet.Name, @"\s+", " ").Trim();
+                var used = sheet.RangeUsed();
+                if (used is null || group.Length == 0) continue;
+                var header = used.CellsUsed().FirstOrDefault(c => c.Address.RowNumber <= 15 &&
+                    c.GetFormattedString().Trim().Equals("ФИО", StringComparison.OrdinalIgnoreCase));
+                if (header is null) { errors.Add($"Лист «{sheet.Name}»: нет колонки «ФИО»."); continue; }
+                var names = new List<string>();
+                for (var row = header.Address.RowNumber + 1; row <= used.LastRow().RowNumber(); row++)
+                {
+                    var name = System.Text.RegularExpressions.Regex.Replace(sheet.Cell(row, header.Address.ColumnNumber).GetFormattedString(), @"\s+", " ").Trim();
+                    // Служебные строки вроде «куратор: …» и пустые строки пропускаются.
+                    if (name.Length < 3 || name.Contains(':')) continue;
+                    names.Add(name);
+                }
+                if (names.Count == 0) { errors.Add($"Лист «{sheet.Name}»: список студентов пуст."); continue; }
+                var target = await db.Groups.SingleOrDefaultAsync(x => x.Name == group) ?? await AddGroupAsync(group);
+                foreach (var name in names.Distinct())
+                {
+                    if (await db.Students.AnyAsync(x => x.GroupId == target.Id && x.FullName == name)) { totalSkipped++; continue; }
+                    db.Students.Add(new Student { GroupId = target.Id, FullName = name });
+                    totalAdded++;
+                }
+                await db.SaveChangesAsync();
+            }
+            return new ImportResultDto(totalAdded, totalSkipped, errors);
+        }
+    }
+
+    public async Task<(int Added, int Skipped)> ImportCsvAsync(Stream csv)
+    {
+        using var reader = new StreamReader(csv, leaveOpen: true);
+        var added = 0;
+        var skipped = 0;
+        while (await reader.ReadLineAsync() is { } raw)
+        {
+            var parts = raw.Split(';').Select(x => x.Trim()).ToArray();
+            if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) continue;
+            if (parts[0].Equals("ФИО", StringComparison.OrdinalIgnoreCase)) continue;
+            var group = await db.Groups.SingleOrDefaultAsync(x => x.Name == parts[1]) ?? await AddGroupAsync(parts[1]);
+            if (await db.Students.AnyAsync(x => x.GroupId == group.Id && x.FullName == parts[0])) { skipped++; continue; }
+            db.Students.Add(new Student { GroupId = group.Id, FullName = parts[0] });
+            await db.SaveChangesAsync();
+            added++;
+        }
+        return (added, skipped);
+    }
+}

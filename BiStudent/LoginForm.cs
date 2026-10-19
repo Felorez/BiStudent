@@ -1,85 +1,113 @@
-using System.Net.Http;
+using System.Net;
 
 namespace BiStudent;
 
-internal sealed class LoginForm : Form
+internal sealed class LoginForm : DarkForm
 {
-    private readonly TextBox password = FormStyle.Input("Введите пароль");
-    private readonly Label feedback = FormStyle.Caption("");
-    private readonly ModernButton signIn = new() { Text = "Войти", Primary = true, Dock = DockStyle.Fill };
-    private readonly CancellationTokenSource cancellation = new();
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(20) };
-    private readonly FirebaseSettings? settings;
-    private bool busy;
-    private bool resourcesDisposed;
-    public TeacherSession? Session { get; private set; }
-    private readonly CheckBox remember = new() { Text = "Запомнить устройство", Checked = true, AutoSize = true, FlatStyle = FlatStyle.Flat, ForeColor = Theme.Muted, Font = Theme.Font(9) };
+    private readonly ClientSettings settings = ClientSettings.Load();
+    private readonly TextBox server = Ui.Input("http://localhost:5080");
+    private readonly TextBox login = Ui.Input("Логин");
+    private readonly TextBox password = Ui.Input("Пароль");
+    private readonly CheckBox remember = new() { Text = "Запомнить меня на этом компьютере", ForeColor = Theme.Text, FlatStyle = FlatStyle.Flat, Dock = DockStyle.Fill };
+    private readonly Label error = Ui.Label("", 9, Theme.Red);
+    private readonly ModernButton button = new() { Text = "Войти", Primary = true, Height = 44 };
+    private bool signingIn;
+    public ApiClient? Api { get; private set; }
 
-    public LoginForm(bool restore = true)
+    public LoginForm(string? initialError = null)
     {
-        FormStyle.Dialog(this, "BiStudent · Вход", new Size(510, 540));
-        StartPosition = FormStartPosition.CenterScreen;
-        DoubleBuffered = true;
-        string? configurationError = null;
-        try { settings = FirebaseSettings.Load(); }
-        catch { configurationError = "Не удалось прочитать firebase.json рядом с приложением."; }
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9, Padding = new Padding(36), BackColor = Theme.Background };
-        foreach (var height in new[] { 58, 44, 40, 26, 42, 28, 48, 58 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var brand = FormStyle.Caption("BiStudent"); brand.Font = Theme.Font(25, FontStyle.Bold); brand.ForeColor = Theme.Text;
-        layout.Controls.Add(brand, 0, 0);
-        var name = FormStyle.Caption(settings?.TeacherName ?? "Ниязова Мадина Ержанкызы"); name.Font = Theme.Font(13, FontStyle.Bold); name.ForeColor = Theme.Text;
-        layout.Controls.Add(name, 0, 1);
-        var email = FormStyle.Caption(settings?.TeacherEmail ?? ""); email.Font = Theme.Font(10); layout.Controls.Add(email, 0, 2);
-        layout.Controls.Add(FormStyle.Caption("ПАРОЛЬ"), 0, 3);
-        password.UseSystemPasswordChar = true; layout.Controls.Add(password, 0, 4);
-        var reveal = new CheckBox { Text = "Показать пароль", Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, ForeColor = Theme.Muted, Font = Theme.Font(9) };
-        reveal.CheckedChanged += (_, _) => password.UseSystemPasswordChar = !reveal.Checked;
-        var options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false }; reveal.Dock = DockStyle.None; reveal.AutoSize = true;
-        options.Controls.Add(reveal); options.Controls.Add(remember); layout.Controls.Add(options, 0, 5);
-        layout.Controls.Add(signIn, 0, 6);
-        feedback.ForeColor = Theme.Red; feedback.TextAlign = ContentAlignment.MiddleLeft; feedback.Text = configurationError ?? "";
-        layout.Controls.Add(feedback, 0, 7);
-        var hint = FormStyle.Caption("Вход через Firebase Authentication\nДля входа требуется интернет."); hint.Font = Theme.Font(9);
-        layout.Controls.Add(hint, 0, 8);
-        Controls.Add(layout);
-        signIn.Enabled = settings is not null;
-        signIn.Click += async (_, _) => await SignInAsync();
-        password.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await SignInAsync(); } };
-        Shown += async (_, _) => {
-            password.Focus();
-            if (!restore || settings is null || RememberedSession.Load(settings) is not string refresh) return;
-            busy = true; signIn.Enabled = password.Enabled = false; feedback.Text = "Восстанавливаем вход на этом устройстве…"; feedback.ForeColor = Theme.Muted;
-            try { var session = await new FirebaseAuth(settings,http).RestoreAsync(refresh,cancellation.Token); if (IsDisposed || cancellation.IsCancellationRequested) return; RememberedSession.Save(settings,session); Session = session; DialogResult = DialogResult.OK; Close(); }
-            catch (InvalidOperationException ex) { RememberedSession.Forget(); if (!IsDisposed) ShowError(ex.Message); }
-            catch (Exception) { if (!IsDisposed && !cancellation.IsCancellationRequested) ShowError("Не удалось восстановить вход. Проверьте интернет или введите пароль."); }
-            finally { busy = false; if (!IsDisposed) signIn.Enabled = password.Enabled = true; }
-        };
+        Text = "BiStudent · Вход"; ClientSize = new Size(920, 560);
+        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Dpi;
+        BackColor = Theme.Background; ForeColor = Theme.Text; Font = Theme.Font(10);
+        Build();
+        server.Text = settings.ServerUrl;
+        login.Text = settings.LastLogin;
+        remember.Checked = settings.RememberMe;
+        error.Text = initialError ?? "";
+        password.UseSystemPasswordChar = true;
+        AcceptButton = button;
+        button.Click += async (_, _) => await SignInAsync();
+    }
+
+    private void Build()
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Background };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54)); layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+        var left = new SmoothPanel { Dock = DockStyle.Fill, Margin = new Padding(36, 28, 16, 28), Padding = new Padding(28) };
+        var form = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 11, BackColor = Theme.Surface };
+        foreach (var height in new[] { 48, 45, 22, 38, 22, 38, 22, 38, 36, 50, 44 }) form.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        var logo = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        var mark = new Label { Text = "✓", Width = 42, Height = 42, BackColor = Theme.Accent, ForeColor = Theme.Text, Font = Theme.Font(20, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+        var brand = new Label { Text = "BiStudent", Width = 240, Height = 42, ForeColor = Theme.Text, Font = Theme.Font(19, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+        logo.Controls.Add(mark); logo.Controls.Add(brand); form.Controls.Add(logo, 0, 0);
+        form.Controls.Add(Ui.Label("Кабинет преподавателя", 13, Theme.Text, FontStyle.Bold), 0, 1);
+        form.Controls.Add(Ui.Label("Адрес сервера", 9, Theme.Muted), 0, 2);
+        server.Dock = DockStyle.Fill; form.Controls.Add(server, 0, 3);
+        form.Controls.Add(Ui.Label("Логин", 9, Theme.Muted), 0, 4);
+        login.Dock = DockStyle.Fill; form.Controls.Add(login, 0, 5);
+        form.Controls.Add(Ui.Label("Пароль", 9, Theme.Muted), 0, 6);
+        password.Dock = DockStyle.Fill; form.Controls.Add(password, 0, 7);
+        form.Controls.Add(remember, 0, 8);
+        button.Dock = DockStyle.Fill; button.Margin = new Padding(0, 8, 0, 0); form.Controls.Add(button, 0, 9);
+        error.TextAlign = ContentAlignment.MiddleLeft; form.Controls.Add(error, 0, 10);
+        left.Controls.Add(form); layout.Controls.Add(left, 0, 0);
+        var right = new SmoothPanel { Dock = DockStyle.Fill, Margin = new Padding(16, 28, 36, 28), Padding = new Padding(20), BackColor = Theme.Sidebar };
+        var features = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Theme.Sidebar };
+        foreach (var height in new[] { 80, 86, 86, 86, 86 }) features.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        features.Controls.Add(Ui.Label("BiStudent — учёт посещаемости и успеваемости", 14, Theme.Text, FontStyle.Bold), 0, 0);
+        AddFeature(features, 1, "Отметка посещаемости по камере\nРаспознавание лиц во время занятия");
+        AddFeature(features, 2, "Электронный журнал\nПосещаемость, баллы, контрольные и итог");
+        AddFeature(features, 3, "Расписание на семестр\nЧётные и нечётные недели, переносы");
+        AddFeature(features, 4, "Регистрация лиц студентами\nПо коду группы, с подтверждением преподавателя");
+        right.Controls.Add(features); layout.Controls.Add(right, 1, 0); Controls.Add(layout);
+    }
+
+    private static void AddFeature(TableLayoutPanel container, int row, string text)
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Sidebar };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.Controls.Add(Ui.Label("●", 12, Theme.Accent), 0, 0);
+        panel.Controls.Add(Ui.Label(text, 10, Theme.Text), 1, 0);
+        container.Controls.Add(panel, 0, row);
     }
 
     private async Task SignInAsync()
     {
-        if (busy || settings is null) return;
-        busy = true; signIn.Enabled = false; password.Enabled = false;
-        feedback.ForeColor = Theme.Muted; feedback.Text = "Проверяем учётную запись…";
+        if (signingIn) return;
+        signingIn = true; button.Enabled = false; UseWaitCursor = true; error.Text = "";
+        ApiClient? client = null;
         try
         {
-            var session = await new FirebaseAuth(settings, http).SignInAsync(password.Text, cancellation.Token);
-            if (IsDisposed || cancellation.IsCancellationRequested) return;
-            if (remember.Checked) RememberedSession.Save(settings,session); else RememberedSession.Forget();
-            Session = session; password.Clear(); DialogResult = DialogResult.OK; Close();
+            var address = server.Text.Trim();
+            if (!ClientSettings.SameServer(settings.ServerUrl, address))
+                settings.StoreRefreshToken(null);
+            settings.ServerUrl = address; settings.LastLogin = login.Text.Trim();
+            settings.RememberMe = remember.Checked;
+            settings.Save();
+            client = new ApiClient(settings);
+            await client.LoginAsync(settings.LastLogin, password.Text, settings.RememberMe);
+            await client.LoadMeAsync();
+            settings.StoreRefreshToken(settings.RememberMe ? client.RefreshToken : null);
+            settings.Save();
+            if (settings.RememberMe)
+                client.RefreshTokenChanged += token => { settings.StoreRefreshToken(token); settings.Save(); };
+            Api = client; DialogResult = DialogResult.OK; Close();
         }
-        catch (OperationCanceledException) { if (!IsDisposed && !cancellation.IsCancellationRequested) ShowError("Firebase не ответил вовремя. Попробуйте ещё раз."); }
-        catch (HttpRequestException) { if (!IsDisposed) ShowError("Нет соединения с Firebase. Проверьте интернет."); }
-        catch (Exception ex) { if (!IsDisposed) ShowError(ex is InvalidOperationException ? ex.Message : "Не удалось выполнить вход. Попробуйте ещё раз."); }
-        finally { busy = false; if (!IsDisposed) { signIn.Enabled = true; password.Enabled = true; } }
-    }
-
-    private void ShowError(string message) { feedback.ForeColor = Theme.Red; feedback.Text = message; password.Focus(); }
-    protected override void OnFormClosing(FormClosingEventArgs e) { base.OnFormClosing(e); if (!e.Cancel) cancellation.Cancel(); }
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing && !resourcesDisposed) { resourcesDisposed = true; cancellation.Cancel(); http.Dispose(); cancellation.Dispose(); }
-        base.Dispose(disposing);
+        catch (ApiException ex)
+        {
+            client?.Dispose();
+            error.Text = ex.StatusCode == HttpStatusCode.Unauthorized ? "Неверный логин или пароль" : ex.Message;
+        }
+        catch (Exception ex)
+        {
+            client?.Dispose();
+            error.Text = $"Не удалось войти: {ex.Message}";
+        }
+        finally
+        {
+            signingIn = false;
+            if (!IsDisposed) { button.Enabled = true; UseWaitCursor = false; }
+        }
     }
 }

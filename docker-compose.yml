@@ -1,0 +1,23 @@
+# Сервер BiStudent + том с базой. Клиент преподавателя (WinForms) подключается к http://<адрес>:5080
+services:
+  server:
+    build:
+      context: .
+      dockerfile: BiStudent.Server/Dockerfile
+    image: bistudent-server
+    ports:
+      - "5080:8080"
+    environment:
+      Setup__AdminPassword: admin
+      # Demo__Enabled: "true"
+      Automation__SecondsPerManualMark: "6"
+      Automation__MinutesPerManualReport: "20"
+      Semester__Start: "2026-08-31"
+    volumes:
+      - bistudent-data:/data
+      # Реальный список группы (ФИО;Группа) подключается только локально и не попадает в образ:
+      # - ./BiStudent.Server/seed/students.local.csv:/app/seed/students.local.csv:ro
+    restart: unless-stopped
+
+volumes:
+  bistudent-data:

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore BiStudent.slnx
+      - run: dotnet build BiStudent.slnx -c Release --no-restore -warnaserror
+      - run: dotnet test --solution BiStudent.slnx -c Release --no-build
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Registration site tests
+        run: node --test tests/site/register.test.cjs
+      - name: Desktop self-test
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem BiStudent/bin/Release -Recurse -Filter BiStudent.exe | Select-Object -First 1
+          $p = Start-Process $exe.FullName -ArgumentList '--self-test' -Wait -PassThru
+          $result = Join-Path $exe.DirectoryName 'diagnostics/result.txt'
+          if ($p.ExitCode -ne 0 -or (Get-Content $result) -ne 'OK') { Get-Content (Join-Path $exe.DirectoryName 'self-test-error.txt') -ErrorAction SilentlyContinue; exit 1 }
+
+  docker:
+    runs-on: ubuntu-24.04
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -f BiStudent.Server/Dockerfile -t bistudent-server .
+      - name: Smoke test
+        run: |
+          docker run -d --name bistudent -p 5080:8080 bistudent-server
+          for i in $(seq 1 30); do curl -fsS http://localhost:5080/health && exit 0; sleep 2; done
+          docker logs bistudent
+          exit 1
+
+  publish:
+    runs-on: windows-2025
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet publish BiStudent/BiStudent.csproj -c Release -r win-x64 --self-contained true -o out/BiStudent-Client
+      - run: dotnet publish BiStudent.Server/BiStudent.Server.csproj -c Release -r win-x64 --self-contained true -o out/BiStudent-Server
+      - uses: actions/upload-artifact@v5
+        with:
+          name: BiStudent-win-x64
+          path: out/
