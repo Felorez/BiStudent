@@ -32,9 +32,11 @@
 
 ## Скачать
 
-**[BiStudent-Setup.exe](https://github.com/Felorez/BiStudent/releases/latest/download/BiStudent-Setup.exe)** для Windows 10/11 x64. Установка без прав администратора, .NET ставить не нужно. После установки на рабочем столе появляется ярлык BiStudent: он запускает сервер и открывает клиент. На новой базе создаются демо-данные, вход **teacher / teacher123**.
+**[BiStudent-win-x64.zip](https://github.com/Felorez/BiStudent/releases/latest/download/BiStudent-win-x64.zip)** для Windows 10/11 x64. Распакуйте архив целиком и запустите `BiStudent.exe`: откроется окно входа. Устанавливать ничего не нужно, .NET уже внутри. На новом компьютере создаются демо-данные, вход **teacher / teacher123**.
 
-Установщик не подписан. Если Windows покажет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае». Брандмауэр спросит про BiStudent.Server: разрешите доступ, иначе студенты не откроют сайт регистрации с телефона.
+Сервер лежит в папке `Server` рядом с программой. Клиент запускает его сам, без отдельного окна, и закрывает при выходе. Первый запуск занимает до полуминуты, следующие несколько секунд.
+
+Программа не подписана. Если Windows покажет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае». Брандмауэр спросит про BiStudent.Server: разрешите доступ, иначе студенты не откроют сайт регистрации с телефона.
 
 Новая версия собирается автоматически после каждого слияния в `main`, все версии лежат в [Releases](https://github.com/Felorez/BiStudent/releases).
 
@@ -61,7 +63,7 @@ cd BiStudent
 | `docker compose up -d --build` | сервер в Docker на `http://localhost:5080`, база в томе `bistudent-data` |
 | `dotnet test --solution BiStudent.slnx` | тесты сервера (`BiStudent.Tests`) и клиента (`BiStudent.Client.Tests`) |
 | `node --test tests/site/register.test.cjs` | тесты сайта регистрации лица |
-| `ISCC installer\BiStudent.iss` | собрать установщик в `dist/` из `out/Client` и `out/Server` (порядок сборки в начале файла) |
+| `.\scripts\package.ps1` | собрать `dist/BiStudent-win-x64.zip`: клиент одним exe, модели и встроенный сервер |
 | `BiStudent.exe --self-test` | без сервера проверяет модели, камеры и окно входа, результат в `diagnostics/result.txt` |
 | `BiStudent.exe --screenshots <адрес> <логин> <пароль>` | входит на сервер и сохраняет скриншоты всех разделов в `diagnostics/` |
 

@@ -39,7 +39,7 @@ if ($Demo) {
 }
 
 Write-Host "Запуск сервера на порту $port…"
-$serverProcess = Start-Process dotnet -ArgumentList @('run', '--project', $server, '-c', 'Release', '--no-build', '--no-launch-profile', '--urls', "http://0.0.0.0:$port") `
+$serverProcess = Start-Process dotnet -ArgumentList @('run', '--project', $server, '-c', 'Release', '--no-build', '--no-launch-profile', '--urls', "http://*:$port") `
     -WorkingDirectory $server -WindowStyle Minimized -PassThru
 
 $ready = $false

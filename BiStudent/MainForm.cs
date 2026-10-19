@@ -43,7 +43,7 @@ internal sealed class MainForm : DarkForm
 
     private void BuildShell()
     {
-        var sidebar = new TableLayoutPanel { Dock = DockStyle.Left, Width = 240, BackColor = Theme.Sidebar, RowCount = 3, Padding = new Padding(16, 22, 16, 16) };
+        var sidebar = new TableLayoutPanel { Dock = DockStyle.Left, Width = 250, BackColor = Theme.Sidebar, RowCount = 3, Padding = new Padding(16, 22, 16, 16) };
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
@@ -61,7 +61,7 @@ internal sealed class MainForm : DarkForm
         foreach (var (key, text, icon) in Pages)
         {
             if (key == "admin" && api.Teacher?.IsAdmin != true) continue;
-            var button = new ModernButton { Text = text, Icon = icon, Width = 206, Height = 44, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, key == "report" ? 14 : 0, 0, 6), Dashed = key == "report", BackColor = Theme.Sidebar };
+            var button = new ModernButton { Text = text, Icon = icon, Width = 218, Height = 44, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, key == "report" ? 14 : 0, 0, 6), Dashed = key == "report", BackColor = Theme.Sidebar };
             button.Click += async (_, _) => await ShowPageAsync(key);
             nav[key] = button;
             menu.Controls.Add(button);
@@ -119,7 +119,7 @@ internal sealed class MainForm : DarkForm
 
     internal async Task ShowPageAsync(string key)
     {
-        if (switching || IsDisposed) return;
+        if (switching || leaving || IsDisposed) return;
         switching = true;
         if (api.Teacher is { } teacher && userName is not null && userAvatar is not null) { userName.Text = teacher.FullName; userAvatar.Text = Initials(teacher.FullName); }
         try
@@ -127,6 +127,8 @@ internal sealed class MainForm : DarkForm
             if (current is not null)
             {
                 await current.OnLeaveAsync();
+                // Пока страница останавливалась (например, камера), окно могли начать закрывать.
+                if (leaving || IsDisposed) return;
                 host.Controls.Remove(current);
                 current.Dispose();
                 current = null;

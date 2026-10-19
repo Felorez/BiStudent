@@ -81,23 +81,32 @@ internal sealed class SchedulePage : Page
         for (var index = 0; index < 6; index++)
         {
             var date = monday.AddDays(index);
-            var column = new SmoothPanel { Dock = DockStyle.Fill, Margin = new Padding(index == 0 ? 0 : 4, 0, index == 5 ? 0 : 4, 0), Padding = new Padding(10), Radius = 12 };
+            var column = new SmoothPanel { Dock = DockStyle.Fill, Margin = new Padding(index == 0 ? 0 : 4, 0, index == 5 ? 0 : 4, 0), Padding = new Padding(8), Radius = 12 };
             var header = new Panel { Dock = DockStyle.Top, Height = 54, BackColor = Theme.Surface };
             var title = Ui.Label($"{UiFormat.DayLong(date.DayOfWeek)}\n{date:dd.MM}", 9.5f, date == DateOnly.FromDateTime(DateTime.Today) ? Theme.AccentHover : Theme.Text, FontStyle.Bold);
             title.TextAlign = ContentAlignment.MiddleCenter;
             header.Controls.Add(title);
             if (date == DateOnly.FromDateTime(DateTime.Today)) header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 2, BackColor = Theme.Accent });
             var list = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Theme.Surface, Padding = new Padding(0, 8, 0, 0) };
+            // Горизонтальной прокрутки в колонке дня не бывает: карточки всегда по ширине колонки.
+            list.AutoScroll = false; list.HorizontalScroll.Maximum = 0; list.HorizontalScroll.Visible = false; list.AutoScroll = true;
+            void SizeCards()
+            {
+                var overflow = list.Controls.Cast<Control>().Sum(x => x.Height + x.Margin.Vertical) + list.Padding.Vertical > list.ClientSize.Height;
+                var width = Math.Max(1, list.ClientSize.Width - (overflow && !list.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0) - 1);
+                foreach (Control item in list.Controls) item.Width = width - item.Margin.Horizontal;
+            }
             var entries = lessons.Where(x => x.Date == date).OrderBy(x => x.Slot.Start).ToList();
             if (entries.Count == 0) { var empty = Ui.Label("Нет пар", 9.5f, Theme.Muted); empty.Dock = DockStyle.Top; empty.Height = 40; empty.TextAlign = ContentAlignment.MiddleCenter; list.Controls.Add(empty); }
             foreach (var lesson in entries)
             {
-                var card = new LessonCard(lesson) { Width = Math.Max(120, list.ClientSize.Width - 6) };
+                var card = new LessonCard(lesson);
                 card.Click += (_, _) => ShowMenu(card, lesson);
                 list.Controls.Add(card);
             }
-            list.Resize += (_, _) => { foreach (var card in list.Controls.OfType<LessonCard>()) card.Width = Math.Max(120, list.ClientSize.Width - 6); };
+            list.Resize += (_, _) => SizeCards();
             column.Controls.Add(list); column.Controls.Add(header); days.Controls.Add(column, index, 0);
+            SizeCards();
         }
         days.ResumeLayout();
     }
@@ -124,7 +133,8 @@ internal sealed class SchedulePage : Page
             if (!Ui.Confirm(FindForm(), "Удалить пару", "Шаблон пары и все её отметки будут удалены. Чтобы убрать одно занятие, лучше отмените его на дату.", "Удалить", true)) return;
             await ExecuteAsync(async () => { await Api.DeleteSlotAsync(lesson.Slot.Id); await RefreshAsync(); });
         };
-        menu.Closed += (_, _) => menu.Dispose();
+        // Удалять меню прямо в Closed нельзя: WinForms ещё закрывает его и падает на удалённом объекте.
+        menu.Closed += (_, _) => { if (IsHandleCreated) BeginInvoke(menu.Dispose); };
         menu.Show(card, new Point(8, card.Height - 4));
     }
 
@@ -137,11 +147,13 @@ internal sealed class SchedulePage : Page
 
     private async Task ImportAsync()
     {
-        using var guide = new DialogShell("Импорт расписания", 680, 330);
-        guide.Content.Controls.Add(Ui.Label(
+        using var guide = new DialogShell("Импорт расписания", 720, 280);
+        var explanation = Ui.Label(
             "Excel — расписание колледжа на семестр (блоки «день · звонок · пара · аудитория · группа»). " +
             "Вы выберете группы, а учётные записи преподавателей создадутся автоматически (нужны права администратора).\n\n" +
-            "CSV: День;Начало;Конец;Предмет;Группа;Аудитория;Неделя — одна строка на шаблон пары.", 10, Theme.Text));
+            "CSV: День;Начало;Конец;Предмет;Группа;Аудитория;Неделя — одна строка на шаблон пары.", 10, Theme.Text);
+        explanation.TextAlign = ContentAlignment.TopLeft;
+        guide.Content.Controls.Add(explanation);
         var template = new ModernButton { Text = "Сохранить шаблон…", Width = 180, Height = 40 };
         template.Click += async (_, _) =>
         {

@@ -32,7 +32,7 @@ internal sealed class TodayPage : Page
         nowCard.Dock = DockStyle.Fill; nowCard.Margin = new Padding(0, 0, 14, 0);
         lessonsCard.Dock = DockStyle.Fill; lessonsCard.Margin = Padding.Empty;
         lessons.Columns.Add("Время", 80); lessons.Columns.Add("Занятие", 300); lessons.Columns.Add("Статус", 110);
-        lessons.Resize += (_, _) => lessons.Columns[1].Width = Math.Max(160, lessons.ClientSize.Width - 200);
+        lessons.Resize += (_, _) => lessons.Columns[1].Width = Math.Max(1, lessons.ClientSize.Width - lessons.Columns[0].Width - lessons.Columns[2].Width - SystemInformation.VerticalScrollBarWidth - 4);
         lessons.DoubleClick += async (_, _) =>
         {
             if (lessons.SelectedItems.Count == 1 && lessons.SelectedItems[0].Tag is LessonDto lesson && Shell is { } shell) await shell.OpenLessonAsync(lesson);
@@ -41,6 +41,7 @@ internal sealed class TodayPage : Page
         middle.Controls.Add(nowCard, 0, 0); middle.Controls.Add(lessonsCard, 1, 0);
 
         riskCard.Dock = DockStyle.Bottom; riskCard.Height = 210; riskCard.Margin = Padding.Empty;
+        Resize += (_, _) => riskCard.Height = Height < 760 ? 186 : 210;
         riskCard.Body.Controls.Add(riskList);
         var spacer = new Panel { Dock = DockStyle.Bottom, Height = 16, BackColor = Theme.Background };
 
@@ -154,13 +155,16 @@ internal sealed class TodayPage : Page
         foreach (var old in nowCard.Body.Controls.Cast<Control>().ToList()) old.Dispose();
         nowCard.Body.Controls.Clear();
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 6, BackColor = Theme.Surface };
-        foreach (var height in new[] { 30, 46, 28, 26, 40, 60 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        // Строки по высоте содержимого, свободное место — над кнопками: карточка помещается и в окне 1180×720.
+        foreach (var height in new[] { 38, 26, 24, 32 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         var lesson = data.Current ?? data.Next;
         if (lesson is null)
         {
             nowCard.Caption = "Сегодня";
-            layout.Controls.Add(Ui.Label("Занятий сегодня больше нет", 18, Theme.Text, FontStyle.Bold), 0, 1);
-            layout.Controls.Add(Ui.Label("Отметки прошедших занятий доступны в журнале.", 10, Theme.Muted), 0, 2);
+            layout.Controls.Add(Ui.Label("Занятий сегодня больше нет", 18, Theme.Text, FontStyle.Bold), 0, 0);
+            layout.Controls.Add(Ui.Label("Отметки прошедших занятий доступны в журнале.", 10, Theme.Muted), 0, 1);
             var journal = new ModernButton { Text = "Открыть журнал", Width = 180 };
             journal.Click += async (_, _) => { if (Shell is { } shell) await shell.ShowPageAsync("journal"); };
             var row = Ui.Row(); row.Controls.Add(journal); layout.Controls.Add(row, 0, 5);
@@ -169,25 +173,28 @@ internal sealed class TodayPage : Page
         }
         var live = data.Current is not null;
         nowCard.Caption = live ? "● Идёт сейчас" : "Следующее занятие";
-        layout.Controls.Add(Ui.Label(lesson.Slot.Subject, 20, Theme.Text, FontStyle.Bold), 0, 1);
-        layout.Controls.Add(Ui.Label($"{lesson.Slot.GroupName} · {UiFormat.Range(lesson.Slot)}{(lesson.Slot.Room is { } room ? $" · ауд. {room}" : "")}", 10.5f, Theme.Muted), 0, 2);
+        var subject = Ui.Label(lesson.Slot.Subject, 18, Theme.Text, FontStyle.Bold); subject.AutoEllipsis = true;
+        layout.Controls.Add(subject, 0, 0);
+        layout.Controls.Add(Ui.Label($"{lesson.Slot.GroupName} · {UiFormat.Range(lesson.Slot)}{(lesson.Slot.Room is { } room ? $" · ауд. {room}" : "")}", 10.5f, Theme.Muted), 0, 1);
         if (live)
         {
             var progress = new ProgressLine { Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 8), Value = (now - lesson.StartsAt).TotalMinutes / (lesson.EndsAt - lesson.StartsAt).TotalMinutes * 100 };
-            layout.Controls.Add(progress, 0, 3);
+            layout.Controls.Add(progress, 0, 2);
             rows ??= [];
             var marked = rows.Count(r => r.Status is not null);
-            layout.Controls.Add(Ui.Label($"{marked} из {rows.Count} отмечено", 13, Theme.Text, FontStyle.Bold), 0, 4);
+            layout.Controls.Add(Ui.Label($"{marked} из {rows.Count} отмечено", 13, Theme.Text, FontStyle.Bold), 0, 3);
         }
         else
         {
-            layout.Controls.Add(Ui.Label($"Начнётся через {UiFormat.Duration((lesson.StartsAt - now).TotalMinutes)}", 10.5f, Theme.AccentHover), 0, 3);
-            layout.Controls.Add(Ui.Label("Камеру можно запустить заранее — отметка начнётся со звонком.", 9.5f, Theme.Muted), 0, 4);
+            layout.Controls.Add(Ui.Label($"Начнётся через {UiFormat.Duration((lesson.StartsAt - now).TotalMinutes)}", 10.5f, Theme.AccentHover), 0, 2);
+            layout.Controls.Add(Ui.Label("Камеру можно запустить заранее — отметка начнётся со звонком.", 9.5f, Theme.Muted), 0, 3);
         }
         var actions = Ui.Row();
-        var camera = new ModernButton { Text = live ? "Начать отметку" : "Подготовить камеру", Icon = "◉", Primary = true, Width = 250 };
+        var camera = new ModernButton { Text = live ? "Начать отметку" : "Подготовить камеру", Icon = "◉", Primary = true };
         camera.Click += async (_, _) => { if (Shell is { } shell) await shell.OpenCamera(lesson); };
-        var manual = new ModernButton { Text = "Открыть занятие", Width = 190 };
+        var manual = new ModernButton { Text = "Открыть занятие" };
+        camera.Width = TextRenderer.MeasureText(camera.Text, camera.Font).Width + 64;
+        manual.Width = TextRenderer.MeasureText(manual.Text, manual.Font).Width + 40;
         manual.Click += async (_, _) => { if (Shell is { } shell) await shell.OpenLessonAsync(lesson); };
         actions.Controls.Add(camera); actions.Controls.Add(manual);
         layout.Controls.Add(actions, 0, 5);

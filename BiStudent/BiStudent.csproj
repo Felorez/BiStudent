@@ -10,7 +10,7 @@
     <NoWarn>$(NoWarn);CA1416;WFO1000</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260627" />
     <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>

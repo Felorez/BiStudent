@@ -10,6 +10,10 @@ internal sealed class ReportPage : Page
     private readonly Panel content = new() { BackColor = Theme.Background };
     private readonly Banner banner = new();
     private readonly Label period = Ui.Label("", 9, Theme.Violet, FontStyle.Bold);
+    private readonly Label heading = Ui.Label("Что автоматизация даёт педсоставу", 22, Theme.Text, FontStyle.Bold);
+    private readonly Label description = Ui.Label(
+        "BiStudent снимает с преподавателя перекличку, сведение журнала и контроль пропусков.\nНиже — фактические данные одного преподавателя и расчёт для всего колледжа.",
+        10.5f, Theme.Text);
     private readonly KpiTile saved = new("Сэкономлено преподавателем", 30) { Accent = true };
     private readonly KpiTile camera = new("Отмечено камерой", 30);
     private readonly KpiTile exports = new("Выгрузок журнала", 30);
@@ -53,14 +57,10 @@ internal sealed class ReportPage : Page
         banner.Height = 216;
         period.Dock = DockStyle.None;
         period.SetBounds(26, 20, 560, 28);
-        var heading = Ui.Label("Что автоматизация даёт педсоставу", 22, Theme.Text, FontStyle.Bold);
         heading.Dock = DockStyle.None;
-        heading.SetBounds(26, 57, 790, 48);
-        var description = Ui.Label(
-            "BiStudent снимает с преподавателя перекличку, сведение журнала и контроль пропусков.\nНиже — фактические данные одного преподавателя и расчёт для всего колледжа.",
-            10.5f, Theme.Text);
+        heading.SetBounds(26, 74, 790, 48);
         description.Dock = DockStyle.None;
-        description.SetBounds(28, 119, 830, 70);
+        description.SetBounds(28, 130, 830, 70);
         saveButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         printButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         saveButton.Top = printButton.Top = 25;
@@ -69,6 +69,8 @@ internal sealed class ReportPage : Page
         banner.Controls.Add(description);
         banner.Controls.Add(saveButton);
         banner.Controls.Add(printButton);
+        saveButton.BringToFront();
+        printButton.BringToFront();
         content.Controls.Add(banner);
 
         for (var i = 0; i < 4; i++) kpis.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
@@ -175,11 +177,14 @@ internal sealed class ReportPage : Page
 
     private void LayoutContent()
     {
-        var width = Math.Max(920, scroll.ClientSize.Width - 20);
+        var width = Math.Max(1, scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2);
         var y = 0;
         banner.SetBounds(0, y, width, 216);
         printButton.Left = width - printButton.Width - 22;
         saveButton.Left = printButton.Left - saveButton.Width - 10;
+        period.Width = Math.Max(1, saveButton.Left - period.Left - 16);
+        heading.Width = Math.Max(1, width - heading.Left - 28);
+        description.Width = Math.Max(1, width - description.Left - 28);
         y += 234;
         kpis.SetBounds(0, y, width, 150);
         y += 168;

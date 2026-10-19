@@ -24,15 +24,30 @@ internal static class Program
         if (screenshots >= 0 && args.Length >= screenshots + 4)
             return Screenshots(args[screenshots + 1], args[screenshots + 2], args[screenshots + 3]);
 
+        // Встроенный сервер живёт вместе с клиентом, поэтому второй экземпляр не запускаем.
+        using var instance = new Mutex(true, @"Local\BiStudent.Client", out var firstInstance);
+        if (!firstInstance)
+        {
+            MessageBox.Show("BiStudent уже открыт.", "BiStudent", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return 0;
+        }
+        LocalServer.Start();
         while (true)
         {
             var settings = ClientSettings.Load();
+            if (LocalServer.IsBundled && !ClientSettings.SameServer(settings.ServerUrl, LocalServer.Url))
+            {
+                settings.ServerUrl = LocalServer.Url;
+                settings.Save();
+            }
             ApiClient? resumed = null;
             string? loginError = null;
             if (settings.RememberMe && settings.LoadRefreshToken() is { } token)
             {
                 try
                 {
+                    if (LocalServer.IsBundled && !Task.Run(() => LocalServer.WaitUntilReadyAsync(TimeSpan.FromSeconds(60))).GetAwaiter().GetResult())
+                        throw new InvalidOperationException("Не удалось запустить сервер BiStudent. Перезапустите программу.");
                     resumed = new ApiClient(settings);
                     resumed.RefreshTokenChanged += value => { settings.StoreRefreshToken(value); settings.Save(); };
                     if (!Task.Run(() => resumed.TryResumeAsync(token)).GetAwaiter().GetResult())

@@ -56,7 +56,8 @@ internal sealed class AttendanceList : Panel
 
     private void Relayout()
     {
-        canvas.Width = Math.Max(10, ClientSize.Width);
+        var vertical = rows.Count * RowHeight + 4 > ClientSize.Height;
+        canvas.Width = Math.Max(10, ClientSize.Width - (vertical && !VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0) - 1);
         canvas.Height = Math.Max(ClientSize.Height, rows.Count * RowHeight + 4);
     }
 

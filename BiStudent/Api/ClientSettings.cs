@@ -59,9 +59,17 @@ internal sealed class ClientSettings
             ProtectedData.Protect(Encoding.UTF8.GetBytes(token), TokenEntropy, DataProtectionScope.CurrentUser));
     }
 
+    // Не сохранившиеся настройки (файл занят или недоступен) не должны ронять приложение посреди входа или занятия.
     public void Save()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions), Encoding.UTF8);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions), Encoding.UTF8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashGuard.Log(ex, "settings");
+        }
     }
 }

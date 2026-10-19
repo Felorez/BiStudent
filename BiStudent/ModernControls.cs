@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace BiStudent;
@@ -43,6 +44,7 @@ internal class DarkForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        Ui.DarkScrollbars(this);
         var enabled = 1;
         if (DwmSetWindowAttribute(Handle, 20, ref enabled, sizeof(int)) != 0)
             DwmSetWindowAttribute(Handle, 19, ref enabled, sizeof(int));
@@ -210,6 +212,7 @@ internal sealed class KpiTile : SmoothPanel
         Padding = new Padding(18, 14, 18, 12);
         Margin = new Padding(0, 0, 14, 0);
         title.Text = caption;
+        title.AutoEllipsis = true;
         value.Font = Theme.Font(valueSize, FontStyle.Bold);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, BackColor = Color.Transparent };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
@@ -332,6 +335,7 @@ internal abstract class Page : UserControl
 {
     private readonly Label title = Ui.Label("", 22, Theme.Text, FontStyle.Bold);
     private readonly Label subtitle = Ui.Label("", 9.5f, Theme.Muted);
+    private readonly TableLayoutPanel headerText = new() { Dock = DockStyle.Fill, RowCount = 2, BackColor = Theme.Background };
     private bool busy;
     protected ApiClient Api { get; }
     protected FlowLayoutPanel Actions { get; } = new() { Dock = DockStyle.Right, AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Theme.Background, Padding = new Padding(0, 14, 0, 0) };
@@ -347,16 +351,23 @@ internal abstract class Page : UserControl
         Padding = new Padding(30, 22, 30, 22);
         title.Text = pageTitle;
         subtitle.Text = pageSubtitle;
-        var text = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, BackColor = Theme.Background };
-        text.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        text.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        text.Controls.Add(title, 0, 0); text.Controls.Add(subtitle, 0, 1);
+        subtitle.AutoEllipsis = true;
+        headerText.MinimumSize = new Size(TextRenderer.MeasureText(pageTitle, title.Font).Width + 16, 0);
+        headerText.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        // Одна строка: длинный подзаголовок обрезается многоточием, а не уходит второй строкой под контент.
+        headerText.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        subtitle.Dock = DockStyle.Top; subtitle.Height = 22;
+        headerText.Controls.Add(title, 0, 0); headerText.Controls.Add(subtitle, 0, 1);
         var head = new Panel { Dock = DockStyle.Top, Height = 78, BackColor = Theme.Background };
-        head.Controls.Add(text); head.Controls.Add(Actions);
+        head.Controls.Add(headerText); head.Controls.Add(Actions);
         Controls.Add(Body); Controls.Add(head);
     }
 
-    public string Title { get => title.Text; protected set => title.Text = value; }
+    public string Title
+    {
+        get => title.Text;
+        protected set { title.Text = value; headerText.MinimumSize = new Size(TextRenderer.MeasureText(value, title.Font).Width + 16, 0); }
+    }
     public string Subtitle { get => subtitle.Text; protected set => subtitle.Text = value; }
 
     public abstract Task LoadAsync();
@@ -384,6 +395,30 @@ internal abstract class Page : UserControl
 
 internal static class Ui
 {
+    private static readonly ConditionalWeakTable<Control, object> scrollbarHooks = new();
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr handle, string? appName, string? idList);
+
+    public static void DarkScrollbars(Control control)
+    {
+        if (scrollbarHooks.TryGetValue(control, out _)) return;
+        scrollbarHooks.Add(control, new object());
+        if (control is ScrollableControl { AutoScroll: true } or DataGridView or ListView or ListBox or TextBox { Multiline: true })
+        {
+            void Apply()
+            {
+                try { SetWindowTheme(control.Handle, "DarkMode_Explorer", null); }
+                catch (DllNotFoundException) { }
+                catch (EntryPointNotFoundException) { }
+            }
+            control.HandleCreated += (_, _) => Apply();
+            if (control.IsHandleCreated) Apply();
+        }
+        control.ControlAdded += (_, e) => { if (e.Control is { } added) DarkScrollbars(added); };
+        foreach (Control child in control.Controls) DarkScrollbars(child);
+    }
+
     /// Ждёт фоновую задачу не дольше timeout и гасит её исключения: зависший драйвер камеры не должен блокировать окно.
     public static async Task<bool> SettleAsync(Task? task, int timeout = 3000)
     {
@@ -518,7 +553,7 @@ internal static class Ui
 
 internal class DialogShell : DarkForm
 {
-    private readonly FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 58, FlowDirection = FlowDirection.RightToLeft, BackColor = Theme.Background, Padding = new Padding(16, 8, 6, 8) };
+    private readonly FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 58, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, BackColor = Theme.Background, Padding = new Padding(16, 8, 6, 8) };
     public Panel Content { get; } = new() { Dock = DockStyle.Fill, BackColor = Theme.Background, Padding = new Padding(24, 8, 24, 8) };
 
     public DialogShell(string title, int width, int height)
@@ -531,6 +566,18 @@ internal class DialogShell : DarkForm
         var heading = Ui.Label(title, 15, Theme.Text, FontStyle.Bold);
         heading.Dock = DockStyle.Top; heading.Height = 56; heading.Padding = new Padding(24, 10, 0, 0);
         Controls.Add(Content); Controls.Add(buttons); Controls.Add(heading);
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        var width = buttons.Padding.Horizontal + buttons.Controls.Cast<Control>().Sum(button => button.Width + button.Margin.Horizontal);
+        if (width > ClientSize.Width)
+        {
+            ClientSize = new Size(width, ClientSize.Height);
+            if (StartPosition == FormStartPosition.CenterParent && Owner is { } owner)
+                Location = new Point(owner.Left + (owner.Width - Width) / 2, owner.Top + (owner.Height - Height) / 2);
+        }
+        base.OnLoad(e);
     }
 
     public ModernButton AddButton(string text, DialogResult result, bool primary = false)
