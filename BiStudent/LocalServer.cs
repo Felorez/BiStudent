@@ -64,7 +64,7 @@ internal static class LocalServer
             {
                 StartInfo = new ProcessStartInfo(executable)
                 {
-                    Arguments = "--urls http://0.0.0.0:5080",
+                    Arguments = "--urls http://*:5080",
                     WorkingDirectory = Path.GetDirectoryName(executable)!,
                     UseShellExecute = false,
                     CreateNoWindow = true
@@ -89,6 +89,10 @@ internal static class LocalServer
 
     private static async Task<bool> IsHealthyAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
+        // Windows отклоняет подключение к закрытому порту только через ~2 с, поэтому сначала смотрим, слушает ли его кто-нибудь.
+        var port = new Uri(Url).Port;
+        if (!System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(x => x.Port == port))
+            return false;
         using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         requestTimeout.CancelAfter(timeout);
         try

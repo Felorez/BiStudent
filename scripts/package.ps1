@@ -10,8 +10,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $stage = Join-Path $root 'out\BiStudent'
 $output = if ([IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $root $Output }
 $zip = Join-Path $output 'BiStudent-win-x64.zip'
+# Нативные библиотеки (OpenCV, SQLite) лежат рядом с exe: при самораспаковке первый запуск ждал распаковки ~200 МБ во временную папку.
+# ReadyToRun компилирует код заранее, чтобы клиент и сервер не тратили секунды на JIT при каждом старте.
 $single = @('-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true',
-    '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:DebugType=None', '-p:DebugSymbols=false')
+    '-p:PublishReadyToRun=true', '-p:DebugType=None', '-p:DebugSymbols=false')
 
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 dotnet publish (Join-Path $root 'BiStudent\BiStudent.csproj') @single -o $stage
