@@ -479,5 +479,7 @@ internal sealed class ApiClient : IDisposable
         else _uiContext.Post(_ => { if (!Volatile.Read(ref _ended)) Unauthorized?.Invoke(); }, null);
     }
 
-    public void Dispose() { EndSession(); _tokenLock.Dispose(); _http.Dispose(); }
+    // _tokenLock не освобождаем: незавершённый запрос обновления токена ещё вызовет Release(),
+    // а SemaphoreSlim без AvailableWaitHandle не держит системных ресурсов.
+    public void Dispose() { EndSession(); _http.Dispose(); }
 }

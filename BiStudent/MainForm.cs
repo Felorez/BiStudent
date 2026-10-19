@@ -119,7 +119,7 @@ internal sealed class MainForm : DarkForm
 
     internal async Task ShowPageAsync(string key)
     {
-        if (switching || IsDisposed) return;
+        if (switching || leaving || IsDisposed) return;
         switching = true;
         if (api.Teacher is { } teacher && userName is not null && userAvatar is not null) { userName.Text = teacher.FullName; userAvatar.Text = Initials(teacher.FullName); }
         try
@@ -127,6 +127,8 @@ internal sealed class MainForm : DarkForm
             if (current is not null)
             {
                 await current.OnLeaveAsync();
+                // Пока страница останавливалась (например, камера), окно могли начать закрывать.
+                if (leaving || IsDisposed) return;
                 host.Controls.Remove(current);
                 current.Dispose();
                 current = null;
