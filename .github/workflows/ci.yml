@@ -48,14 +48,30 @@ jobs:
     runs-on: windows-2025
     needs: build-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
-      - run: dotnet publish BiStudent/BiStudent.csproj -c Release -r win-x64 --self-contained true -o out/BiStudent-Client
-      - run: dotnet publish BiStudent.Server/BiStudent.Server.csproj -c Release -r win-x64 --self-contained true -o out/BiStudent-Server
+      - run: dotnet publish BiStudent/BiStudent.csproj -c Release -r win-x64 --self-contained true -o out/Client
+      - run: dotnet publish BiStudent.Server/BiStudent.Server.csproj -c Release -r win-x64 --self-contained true -o out/Server
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          Copy-Item installer/BiStudent.cmd out/
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DSrc=$PWD\out" "/DOutDir=$PWD\dist" "/DAppVersion=1.0.${{ github.run_number }}" installer/BiStudent.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v5
         with:
-          name: BiStudent-win-x64
-          path: out/
+          name: BiStudent-Setup
+          path: dist/BiStudent-Setup.exe
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "v1.0.${{ github.run_number }}" dist/BiStudent-Setup.exe
+          --target "${{ github.sha }}" --title "BiStudent 1.0.${{ github.run_number }}"
+          --notes "Установщик для Windows 10/11 x64: скачайте BiStudent-Setup.exe и запустите. Вход в демо-режиме: teacher / teacher123."
