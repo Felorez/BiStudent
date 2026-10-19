@@ -26,7 +26,8 @@ internal sealed class EnrollmentCodeDialog : DarkForm
         this.api = api;
         this.groupId = groupId;
         Text = "Код регистрации лица";
-        ClientSize = new Size(780, 740);
+        // На низких экранах (1366×768) окно не выше рабочей области, остальное — прокруткой.
+        ClientSize = new Size(780, Math.Min(800, Screen.PrimaryScreen!.WorkingArea.Height - 60));
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;

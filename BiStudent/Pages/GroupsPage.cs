@@ -24,10 +24,11 @@ internal sealed class GroupsPage : Page
 
     public GroupsPage(ApiClient api) : base(api, "Группы", "Списки групп и регистрация лиц студентов")
     {
-        var import = new ModernButton { Text = "Импорт списков", Width = 140 };
-        var code = new ModernButton { Text = "Код регистрации", Width = 185 };
-        var addGroup = new ModernButton { Text = "+ Группа", Width = 130 };
-        var addStudent = new ModernButton { Text = "+ Студент", Width = 140, Primary = true };
+        var import = new ModernButton { Text = "Импорт списков" };
+        var code = new ModernButton { Text = "Код регистрации" };
+        var addGroup = new ModernButton { Text = "+ Группа" };
+        var addStudent = new ModernButton { Text = "+ Студент", Primary = true };
+        foreach (var button in new[] { import, code, submissionsButton, addGroup, addStudent }) { button.Width = TextRenderer.MeasureText(button.Text, button.Font).Width + 16; button.Margin = new Padding(0, 0, 4, 0); }
         Actions.Controls.Add(import); Actions.Controls.Add(code); Actions.Controls.Add(submissionsButton);
         Actions.Controls.Add(addGroup); Actions.Controls.Add(addStudent);
         import.Click += async (_, _) => await ImportAsync();
@@ -101,7 +102,10 @@ internal sealed class GroupsPage : Page
         if (IsDisposed) return;
         var submissions = await Api.FaceSubmissionsAsync();
         if (!IsDisposed)
+        {
             submissionsButton.Text = submissions.Count == 0 ? "Заявки на регистрацию" : $"Заявки на регистрацию ({submissions.Count})";
+            submissionsButton.Width = TextRenderer.MeasureText(submissionsButton.Text, submissionsButton.Font).Width + 16;
+        }
     }
 
     private void RenderGroups()

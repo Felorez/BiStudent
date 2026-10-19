@@ -92,8 +92,8 @@ internal sealed class EnrollmentDialog : DarkForm
             Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(18),
             BackColor = Theme.Background
         };
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         columns.Controls.Add(left, 0, 0); columns.Controls.Add(right, 1, 0);
         Controls.Add(columns);
 

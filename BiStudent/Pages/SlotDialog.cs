@@ -41,6 +41,7 @@ internal sealed class SlotDialog : DarkForm
         foreach (var height in new[] { 46, 0, 46, 46, 90, 46, 46, 42, 46, 46, 50 }) fields.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         Add(0, "Группа", group); fields.Controls.Add(newGroupLabel, 0, 1); newGroup.Dock = DockStyle.Fill; fields.Controls.Add(newGroup, 1, 1); Add(2, "Предмет", subject); Add(3, "Аудитория", room);
         Add(4, "Пресеты звонков", presets); Add(5, "Начало", start); Add(6, "Конец", end); Add(7, "", oneOff);
+        day.Dock = date.Dock = DockStyle.Fill;
         fields.Controls.Add(dateLabel, 0, 8); fields.Controls.Add(day, 1, 8);
         Add(9, "Неделя", parity);
         fields.Controls.Add(error, 0, 10); fields.SetColumnSpan(error, 2);

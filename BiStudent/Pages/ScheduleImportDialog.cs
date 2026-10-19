@@ -42,8 +42,9 @@ internal sealed class ScheduleImportDialog : DialogShell
         var listCard = new SmoothPanel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = Theme.Surface, Margin = new Padding(0, 4, 0, 4) };
         listCard.Controls.Add(list);
         layout.Controls.Add(listCard, 0, 1);
-        layout.Controls.Add(Ui.Label("Преподаватели: " + string.Join(", ", preview.Teachers) +
-            ".\nДля новых преподавателей будут созданы учётные записи с временными паролями.", 9, Theme.Muted), 0, 2);
+        var teacherNames = string.Join(", ", preview.Teachers);
+        layout.Controls.Add(Ui.Label("Преподаватели: " + teacherNames +
+            (teacherNames.EndsWith('.') ? "" : ".") + "\nДля новых преподавателей будут созданы учётные записи с временными паролями.", 9, Theme.Muted), 0, 2);
         if (preview.Warnings.Count > 0)
             layout.Controls.Add(Ui.Label($"Не удалось разобрать записей: {preview.Warnings.Count} — они будут пропущены и показаны после импорта.", 9, Theme.Yellow), 0, 3);
         error.TextAlign = ContentAlignment.MiddleLeft;
@@ -91,6 +92,10 @@ internal sealed class ScheduleImportDialog : DialogShell
         var grid = Ui.Grid();
         grid.Dock = DockStyle.Fill;
         grid.Columns.Add("name", "ФИО"); grid.Columns.Add("login", "Логин"); grid.Columns.Add("password", "Временный пароль"); grid.Columns.Add("state", "Статус");
+        grid.Columns["name"]!.FillWeight = 43;
+        grid.Columns["login"]!.FillWeight = 17;
+        grid.Columns["password"]!.FillWeight = 17;
+        grid.Columns["state"]!.FillWeight = 23;
         grid.Columns["password"]!.DefaultCellStyle.Font = new Font("Consolas", 11, FontStyle.Bold);
         foreach (var teacher in result.Teachers)
             grid.Rows.Add(teacher.FullName, teacher.Login, teacher.TemporaryPassword ?? "—",

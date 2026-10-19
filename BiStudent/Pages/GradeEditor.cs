@@ -34,7 +34,7 @@ internal sealed class GradeEditor : IDisposable
         reason = attendance?.Reason ?? cell.Reason;
         comment = attendance?.Comment ?? cell.Comment;
         hasDocument = attendance?.HasDocument ?? false;
-        shell = new DialogShell(attendanceOnly ? "Посещаемость" : "Отметка и балл", 400, attendanceOnly ? 270 : column.Kind == JournalColumnKind.Lesson && !scoreOnly ? 330 : 220);
+        shell = new DialogShell(attendanceOnly ? "Посещаемость" : "Отметка и балл", 460, attendanceOnly ? 320 : column.Kind == JournalColumnKind.Lesson && !scoreOnly ? 380 : 270);
         Build(cell.Score, column.Kind == JournalColumnKind.Lesson && !scoreOnly, !attendanceOnly);
     }
 
@@ -45,7 +45,7 @@ internal sealed class GradeEditor : IDisposable
         this.subject = subject;
         this.studentId = studentId;
         this.studentName = studentName;
-        shell = new DialogShell("Итоговый балл", 400, 220);
+        shell = new DialogShell("Итоговый балл", 460, 270);
         Build(final, false);
     }
 
@@ -54,7 +54,9 @@ internal sealed class GradeEditor : IDisposable
     private void Build(int? initialScore, bool attendance, bool scoreEnabled = true)
     {
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, BackColor = Theme.Background };
-        layout.Controls.Add(Ui.Label(studentName, 10, Theme.Muted));
+        var name = Ui.Label(studentName, 10, Theme.Muted);
+        name.AutoEllipsis = true;
+        layout.Controls.Add(name);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         if (attendance)
         {
@@ -64,7 +66,7 @@ internal sealed class GradeEditor : IDisposable
                 ("П", AttendanceStatus.Present), ("Н", AttendanceStatus.Absent), ("Н — уважительная…", AttendanceStatus.Excused)
             })
             {
-                var button = new ModernButton { Text = text, Width = value == AttendanceStatus.Excused ? 172 : 62, Height = 38, Selected = status == value };
+                var button = new ModernButton { Text = text, Width = value == AttendanceStatus.Excused ? TextRenderer.MeasureText(text, Theme.Font(10, FontStyle.Bold)).Width + 24 : 62, Height = 38, Selected = status == value };
                 button.Click += async (_, _) => await SaveStatusAsync(value);
                 buttons.Controls.Add(button);
                 statusButtons[value] = button;

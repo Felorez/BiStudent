@@ -89,15 +89,18 @@ internal sealed class CameraPage : Page
 
         students.Dock = DockStyle.Fill;
         students.Margin = Padding.Empty;
-        var listArea = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface };
-        finish.Dock = DockStyle.Bottom;
+        var listArea = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, BackColor = Theme.Surface };
+        listArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        listArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        finish.Dock = DockStyle.Fill;
         finish.Height = 42;
-        listArea.Controls.Add(attendance);
-        listArea.Controls.Add(finish);
+        listArea.Controls.Add(attendance, 0, 0);
+        listArea.Controls.Add(finish, 0, 1);
         students.Body.Controls.Add(listArea);
         var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, BackColor = Theme.Background };
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 470));
+        columns.Resize += (_, _) => columns.ColumnStyles[1].Width = Math.Max(470, columns.ClientSize.Width * .43f);
         columns.Controls.Add(left, 0, 0); columns.Controls.Add(students, 1, 0);
         Body.Controls.Add(columns);
 
