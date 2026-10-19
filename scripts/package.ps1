@@ -1,0 +1,38 @@
+<#
+.SYNOPSIS
+  Собирает dist/BiStudent-win-x64.zip: распаковал, запустил BiStudent.exe, вошёл.
+  В корне архива клиент одним файлом и модели, в папке Server встроенный сервер, который клиент запускает сам.
+#>
+param([string]$Output = 'dist')
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$stage = Join-Path $root 'out\BiStudent'
+$output = if ([IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $root $Output }
+$zip = Join-Path $output 'BiStudent-win-x64.zip'
+$single = @('-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true',
+    '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:DebugType=None', '-p:DebugSymbols=false')
+
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+dotnet publish (Join-Path $root 'BiStudent\BiStudent.csproj') @single -o $stage
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+dotnet publish (Join-Path $root 'BiStudent.Server\BiStudent.Server.csproj') @single -o (Join-Path $stage 'Server')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+@'
+BiStudent — электронный журнал преподавателя
+
+1. Распакуйте архив целиком в любую папку (не запускайте из самого архива).
+2. Запустите BiStudent.exe.
+3. Войдите: на новом компьютере создаются демо-данные, логин teacher, пароль teacher123.
+
+Нужна Windows 10/11 x64, устанавливать .NET не нужно. Папки Models и Server должны лежать рядом с BiStudent.exe.
+Если Windows покажет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае».
+Если брандмауэр спросит про BiStudent.Server, разрешите доступ: через него студенты регистрируют лица с телефона.
+Данные хранятся в C:\ProgramData\BiStudent и не пропадают при обновлении программы.
+'@ | Set-Content (Join-Path $stage 'README.txt') -Encoding utf8
+
+New-Item -ItemType Directory -Force $output | Out-Null
+if (Test-Path $zip) { Remove-Item $zip -Force }
+Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+Write-Host "Готово: $zip ($([math]::Round((Get-Item $zip).Length / 1MB)) МБ)"
