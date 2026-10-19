@@ -139,7 +139,7 @@ public sealed class AuditFixesTests : IDisposable
         var group = await PostAsync<GroupDto>("/api/groups", new CreateGroupRequest("Регулярная группа"));
         var date = DateOnly.FromDateTime(DateTime.Today).AddDays(-7);
         var request = new SaveSlotRequest(group.Id, null, "Физика", null, date.DayOfWeek,
-            new TimeOnly(8, 0), new TimeOnly(9, 20), WeekParity.Every, date);
+            new TimeOnly(19, 0), new TimeOnly(20, 20), WeekParity.Every, date);
         var slot = await PostAsync<SlotDto>("/api/schedule/slots", request);
 
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/schedule/slots/{slot.Id}",
@@ -156,7 +156,7 @@ public sealed class AuditFixesTests : IDisposable
         var group = await PostAsync<GroupDto>("/api/groups", new CreateGroupRequest("Большой период"));
         var today = DateOnly.FromDateTime(DateTime.Today);
         await PostAsync<SlotDto>("/api/schedule/slots", new SaveSlotRequest(group.Id, null, "История", null,
-            today.DayOfWeek, new TimeOnly(8, 0), new TimeOnly(9, 20), WeekParity.Every, null));
+            today.DayOfWeek, new TimeOnly(19, 0), new TimeOnly(20, 20), WeekParity.Every, null));
 
         var timer = Stopwatch.StartNew();
         using var response = await client.GetAsync($"/api/journal/{group.Id}?from=0001-01-01&to={today:yyyy-MM-dd}");

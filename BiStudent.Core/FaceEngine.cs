@@ -20,6 +20,7 @@ public sealed class FaceEngine : IDisposable
     private readonly Net recognitionNet;
     private FaceDetectorYN? detector;
     private OpenCvSharp.Size detectorSize;
+    private readonly Dictionary<OpenCvSharp.Size, FaceDetectorYN> scaledDetectors = new();
     private readonly List<(int StudentId, float[] Vector)> enrolled = new();
 
     // OpenCV Zoo uses 0.363 for cosine matching. A slightly higher threshold
@@ -188,8 +189,49 @@ public sealed class FaceEngine : IDisposable
             detectorSize = size;
         }
         var faces = new Mat();
-        detector.Detect(frame, faces);
-        return faces;
+        try
+        {
+            detector.Detect(frame, faces);
+            if (faces.Rows > 0 || Math.Max(frame.Width, frame.Height) <= 480) return faces;
+            var longest = Math.Max(frame.Width, frame.Height);
+            foreach (var longSide in new[] { 640, 480, 320 })
+            {
+                if (longSide >= longest) continue;
+                var scale = (double)longSide / longest;
+                var reducedSize = new OpenCvSharp.Size(
+                    Math.Max(1, (int)Math.Round(frame.Width * scale)),
+                    Math.Max(1, (int)Math.Round(frame.Height * scale)));
+                if (!scaledDetectors.TryGetValue(reducedSize, out var scaledDetector))
+                {
+                    if (scaledDetectors.Count == 8)
+                    {
+                        foreach (var cached in scaledDetectors.Values)
+                            cached.Dispose();
+                        scaledDetectors.Clear();
+                    }
+                    scaledDetector = FaceDetectorYN.Create(detectionModel, "", reducedSize, 0.85f);
+                    scaledDetectors.Add(reducedSize, scaledDetector);
+                }
+                using var reduced = new Mat();
+                Cv2.Resize(frame, reduced, reducedSize, 0, 0, InterpolationFlags.Area);
+                using var found = new Mat();
+                scaledDetector.Detect(reduced, found);
+                var foundRows = found.Rows;
+                if (foundRows == 0) continue;
+                for (var row = 0; row < foundRows; row++)
+                    for (var col = 0; col < 14; col++)
+                        found.Set(row, col, found.At<float>(row, col) *
+                            (col % 2 == 0 ? (float)frame.Width / reduced.Width : (float)frame.Height / reduced.Height));
+                faces.Dispose();
+                return found.Clone();
+            }
+            return faces;
+        }
+        catch
+        {
+            faces.Dispose();
+            throw;
+        }
     }
 
     private static OpenCvSharp.Rect Bounds(Mat faces, int row, int width, int height)
@@ -256,6 +298,8 @@ public sealed class FaceEngine : IDisposable
     public void Dispose()
     {
         detector?.Dispose();
+        foreach (var cached in scaledDetectors.Values)
+            cached.Dispose();
         recognitionNet.Dispose();
     }
 }

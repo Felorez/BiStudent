@@ -30,7 +30,15 @@
 
 **Учётные записи и копии.** Администратор заводит преподавателей и выдаёт временные пароли. Сервер раз в сутки делает резервную копию, вручную её можно скачать и восстановить в разделе «Администрирование».
 
-## Запуск
+## Скачать
+
+**[BiStudent-Setup.exe](https://github.com/Felorez/BiStudent/releases/latest/download/BiStudent-Setup.exe)** для Windows 10/11 x64. Установка без прав администратора, .NET ставить не нужно. После установки на рабочем столе появляется ярлык BiStudent: он запускает сервер и открывает клиент. На новой базе создаются демо-данные, вход **teacher / teacher123**.
+
+Установщик не подписан. Если Windows покажет «Windows защитила ваш компьютер», нажмите «Подробнее» → «Выполнить в любом случае». Брандмауэр спросит про BiStudent.Server: разрешите доступ, иначе студенты не откроют сайт регистрации с телефона.
+
+Новая версия собирается автоматически после каждого слияния в `main`, все версии лежат в [Releases](https://github.com/Felorez/BiStudent/releases).
+
+## Запуск из исходников
 
 Нужны Windows x64 и .NET 10 SDK.
 
@@ -53,6 +61,7 @@ cd BiStudent
 | `docker compose up -d --build` | сервер в Docker на `http://localhost:5080`, база в томе `bistudent-data` |
 | `dotnet test --solution BiStudent.slnx` | тесты сервера (`BiStudent.Tests`) и клиента (`BiStudent.Client.Tests`) |
 | `node --test tests/site/register.test.cjs` | тесты сайта регистрации лица |
+| `ISCC installer\BiStudent.iss` | собрать установщик в `dist/` из `out/Client` и `out/Server` (порядок сборки в начале файла) |
 | `BiStudent.exe --self-test` | без сервера проверяет модели, камеры и окно входа, результат в `diagnostics/result.txt` |
 | `BiStudent.exe --screenshots <адрес> <логин> <пароль>` | входит на сервер и сохраняет скриншоты всех разделов в `diagnostics/` |
 
