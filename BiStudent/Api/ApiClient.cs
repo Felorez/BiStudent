@@ -115,6 +115,9 @@ internal sealed class ApiClient : IDisposable
 
     public Task<AutomationSettingsDto> AutomationAsync() => GetAsync<AutomationSettingsDto>("api/settings/automation");
     public Task<EnrollResultDto> RecognitionStatusAsync() => GetAsync<EnrollResultDto>("api/recognition/status");
+    public Task<SyncStatusDto> SyncStatusAsync(CancellationToken cancellationToken = default) =>
+        RequestAsync<SyncStatusDto>(HttpMethod.Get, "api/sync/status", cancellationToken: cancellationToken);
+    public Task<SyncStatusDto> SyncNowAsync() => RequestAsync<SyncStatusDto>(HttpMethod.Post, "api/sync/run");
     public Task<List<BackupFileDto>> BackupsAsync() => GetAsync<List<BackupFileDto>>("api/admin/backups");
     public Task<BackupFileDto> CreateBackupAsync() =>
         RequestAsync<BackupFileDto>(HttpMethod.Post, "api/admin/backups", timeout: LongTimeout);

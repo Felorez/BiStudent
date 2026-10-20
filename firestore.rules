@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function uidPath() {
+      return /databases/$(database)/documents/TeacherUids/$(request.auth.uid);
+    }
+
+    function teacherPath() {
+      return /databases/$(database)/documents/Teachers/$(get(uidPath()).data.teacher);
+    }
+
+    function teacherDoc() {
+      return get(teacherPath());
+    }
+
+    function teacher() {
+      return signedIn()
+        && exists(uidPath())
+        && exists(teacherPath())
+        && teacherDoc().data.IsActive == true
+        && teacherDoc().data._deleted != true;
+    }
+
+    function admin() {
+      return teacher() && teacherDoc().data.IsAdmin == true;
+    }
+
+    match /{collection}/{doc} {
+      allow read, write: if teacher() && collection in [
+        'Groups', 'Students', 'GroupMemberships', 'FaceSamples',
+        'ScheduleSlots', 'SlotCancellations', 'AttendanceMarks',
+        'LessonGrades', 'Assessments', 'AssessmentGrades', 'FinalGrades',
+        'EnrollmentCodes', 'FaceSubmissions', 'FaceSubmissionImages'
+      ];
+    }
+
+    match /Teachers/{tid} {
+      allow read: if teacher();
+      allow create: if admin() || (
+        signedIn()
+        && !exists(/databases/$(database)/documents/meta/bootstrap)
+        && getAfter(/databases/$(database)/documents/meta/bootstrap).data.uid == request.auth.uid
+        && request.resource.data.FirebaseUid == request.auth.uid
+        && request.resource.data.IsAdmin == true
+        && request.resource.data.IsActive == true
+      );
+      allow update: if admin() || (
+        signedIn()
+        && resource.data.FirebaseUid == null
+        && resource.data.ClaimHash is bytes
+        && request.resource.data.ClaimProof is string
+        && hashing.sha256(request.resource.data.ClaimProof)
+          == resource.data.ClaimHash
+        && request.resource.data.FirebaseUid == request.auth.uid
+        && resource.data.Email == request.auth.token.email
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['FirebaseUid', 'ClaimProof', '_updatedAt'])
+      ) || (
+        teacher()
+        && resource.data.FirebaseUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['MustChangePassword', '_updatedAt', '_device'])
+      );
+      allow delete: if false;
+    }
+
+    match /TeacherUids/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || teacher());
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['teacher'])
+        && request.resource.data.teacher is string
+        && getAfter(/databases/$(database)/documents/Teachers/$(request.resource.data.teacher)).data.FirebaseUid == uid
+        && (request.auth.uid == uid || admin());
+      allow update, delete: if admin();
+    }
+
+    match /meta/bootstrap {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}

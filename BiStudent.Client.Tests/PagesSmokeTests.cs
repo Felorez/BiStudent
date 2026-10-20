@@ -110,6 +110,7 @@ public sealed class PagesSmokeTests
         server.On(HttpMethod.Get, "api/report", _ => FakeServer.Json(report));
         server.On(HttpMethod.Get, "api/settings/automation", _ => FakeServer.Json(new AutomationSettingsDto(6, 20, 3)));
         server.On(HttpMethod.Get, "api/recognition/status", _ => FakeServer.Json(new EnrollResultDto(true, "Распознавание готово.")));
+        server.On(HttpMethod.Get, "api/sync/status", _ => FakeServer.Json(new SyncStatusDto(true, "Ok", DateTimeOffset.Now, 0, null)));
         server.On(HttpMethod.Get, "api/schedule/day", _ => FakeServer.Json(new List<LessonDto> { lesson, later }));
         server.On(HttpMethod.Get, "api/schedule/week", _ => FakeServer.Json(new List<LessonDto> { lesson, later }));
         server.On(HttpMethod.Get, "api/schedule/parity", _ => FakeServer.Json(WeekParity.Odd));

@@ -1,3 +1,4 @@
+using System.Net;
 using BiStudent.Contracts;
 
 namespace BiStudent;
@@ -15,12 +16,16 @@ internal sealed class MainForm : DarkForm
     private readonly Panel host = new() { Dock = DockStyle.Fill, BackColor = Theme.Background };
     private readonly Dictionary<string, ModernButton> nav = [];
     private readonly ContextMenuStrip userMenu = new() { BackColor = Theme.SurfaceHover, ForeColor = Theme.Text, Font = Theme.Font(10) };
+    private readonly Label syncStatus = Ui.Label("", 8.5f, Theme.Muted);
+    private readonly ToolTip syncToolTip = new();
+    private readonly System.Windows.Forms.Timer syncTimer = new() { Interval = 30000 };
     private Page? current;
     private Label? userName;
     private Label? userAvatar;
     private bool switching;
     private bool closingAfterLeave;
     private bool leaving;
+    private bool syncBusy;
 
     public MainForm(ApiClient api)
     {
@@ -31,7 +36,12 @@ internal sealed class MainForm : DarkForm
         StartPosition = FormStartPosition.CenterScreen;
         BuildShell();
         api.Unauthorized += OnUnauthorized;
-        Shown += async (_, _) => { if (AutoOpenFirstPage && current is null) await ShowPageAsync("today"); };
+        syncTimer.Tick += async (_, _) => await UpdateSyncAsync();
+        Shown += async (_, _) =>
+        {
+            syncTimer.Start(); _ = UpdateSyncAsync();
+            if (AutoOpenFirstPage && current is null) await ShowPageAsync("today");
+        };
     }
 
     public bool SignedOut { get; private set; }
@@ -43,9 +53,10 @@ internal sealed class MainForm : DarkForm
 
     private void BuildShell()
     {
-        var sidebar = new TableLayoutPanel { Dock = DockStyle.Left, Width = 250, BackColor = Theme.Sidebar, RowCount = 3, Padding = new Padding(16, 22, 16, 16) };
+        var sidebar = new TableLayoutPanel { Dock = DockStyle.Left, Width = 250, BackColor = Theme.Sidebar, RowCount = 4, Padding = new Padding(16, 22, 16, 16) };
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
 
         var brand = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, BackColor = Theme.Sidebar, Margin = Padding.Empty };
@@ -67,6 +78,10 @@ internal sealed class MainForm : DarkForm
             menu.Controls.Add(button);
         }
         sidebar.Controls.Add(menu, 0, 1);
+
+        syncStatus.AutoEllipsis = true; syncStatus.Cursor = Cursors.Hand; syncStatus.Visible = false;
+        syncStatus.Click += async (_, _) => await UpdateSyncAsync(run: true);
+        sidebar.Controls.Add(syncStatus, 0, 2);
 
         var user = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, BackColor = Theme.Sidebar, Margin = Padding.Empty };
         user.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44)); user.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); user.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
@@ -96,10 +111,57 @@ internal sealed class MainForm : DarkForm
         }
         avatar.Click += OpenUserMenu; nameLabel.Click += OpenUserMenu; roleLabel.Click += OpenUserMenu;
         user.Click += OpenUserMenu;
-        sidebar.Controls.Add(user, 0, 2);
+        sidebar.Controls.Add(user, 0, 3);
 
         Controls.Add(host);
         Controls.Add(sidebar);
+    }
+
+    private async Task UpdateSyncAsync(bool run = false)
+    {
+        if (syncBusy || leaving || IsDisposed) return;
+        syncBusy = true;
+        if (run) { syncStatus.Text = "☁ Синхронизация…"; syncToolTip.SetToolTip(syncStatus, ""); }
+        try
+        {
+            var status = run ? await api.SyncNowAsync() : await api.SyncStatusAsync();
+            if (leaving || IsDisposed) return;
+            if (!status.Enabled || status.State == "Disabled")
+            {
+                syncStatus.Visible = false;
+                syncToolTip.SetToolTip(syncStatus, "");
+                return;
+            }
+            var queue = status.Pending > 0 ? $" · в очереди {status.Pending}" : "";
+            syncStatus.Text = status.State switch
+            {
+                "Ok" => "☁ Синхронизировано" + queue,
+                "Offline" => "☁ Нет связи — работа офлайн" + queue,
+                "NotSignedIn" => "☁ Облако не подключено",
+                "Error" => "☁ Ошибка синхронизации",
+                _ => ""
+            };
+            syncStatus.Visible = syncStatus.Text.Length > 0;
+            var details = status.LastSuccessAt is { } last
+                ? $"Последняя синхронизация: {last.ToLocalTime():g}"
+                : "Синхронизации ещё не было";
+            if (!string.IsNullOrWhiteSpace(status.Error)) details += $"\nОшибка: {status.Error}";
+            syncToolTip.SetToolTip(syncStatus, details);
+        }
+        catch (ApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (leaving || IsDisposed) return;
+            syncStatus.Visible = false;
+            syncToolTip.SetToolTip(syncStatus, "");
+        }
+        catch (Exception ex)
+        {
+            if (leaving || IsDisposed) return;
+            syncStatus.Text = "☁ Нет связи с сервером";
+            syncStatus.Visible = true;
+            syncToolTip.SetToolTip(syncStatus, ex.Message);
+        }
+        finally { syncBusy = false; }
     }
 
     private static string Initials(string name) =>
@@ -184,6 +246,7 @@ internal sealed class MainForm : DarkForm
 
     protected override async void OnFormClosing(FormClosingEventArgs e)
     {
+        syncTimer.Stop();
         if (!closingAfterLeave && current is not null)
         {
             e.Cancel = true;
@@ -198,6 +261,8 @@ internal sealed class MainForm : DarkForm
             return;
         }
         api.Unauthorized -= OnUnauthorized;
+        syncTimer.Dispose();
+        syncToolTip.Dispose();
         userMenu.Dispose();
         base.OnFormClosing(e);
     }

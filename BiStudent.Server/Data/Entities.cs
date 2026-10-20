@@ -14,6 +14,10 @@ public sealed class Teacher
     public string SecurityStamp { get; set; } = Guid.NewGuid().ToString("N");
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? LastLoginAt { get; set; }
+    // Учётная запись Firebase Authentication, если она уже связана с этим преподавателем.
+    public string? FirebaseUid { get; set; }
+    // Секрет для первой привязки старой учётки к Firebase; хранится только локально, в облаке — его SHA-256.
+    public string? ClaimToken { get; set; }
 }
 
 public sealed class Group

@@ -4,7 +4,9 @@ using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using BiStudent.Server.Data;
 using BiStudent.Server.Endpoints;
+using BiStudent.Server.Firebase;
 using BiStudent.Server.Services;
+using BiStudent.Server.Sync;
 using Microsoft.AspNetCore.Authentication.BearerToken;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -29,7 +31,23 @@ var data = Path.GetDirectoryName(Path.GetFullPath(sqlite.DataSource))!;
 Directory.CreateDirectory(data);
 Directory.CreateDirectory(Path.Combine(data, "keys"));
 
-builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlite(sqlite.ToString()));
+var firebase = builder.Configuration.GetSection("Firebase").Get<FirebaseOptions>() ?? new FirebaseOptions();
+builder.Services.Configure<FirebaseOptions>(builder.Configuration.GetSection("Firebase"));
+builder.Services.AddSingleton<SyncSignal>();
+builder.Services.AddSingleton<SyncCaptureInterceptor>();
+builder.Services.AddDbContext<AppDbContext>((services, options) =>
+{
+    options.UseSqlite(sqlite.ToString());
+    // Изменения попадают в очередь отправки в Firestore, только если Firebase настроен.
+    if (firebase.Enabled) options.AddInterceptors(services.GetRequiredService<SyncCaptureInterceptor>());
+});
+// Firebase: SQLite — локальный кеш, основная копия данных и учётки — в Firestore и Firebase Authentication.
+builder.Services.AddHttpClient<FirebaseAuthClient>();
+builder.Services.AddHttpClient<FirestoreClient>();
+builder.Services.AddSingleton<FirebaseSessionStore>();
+builder.Services.AddSingleton<SyncService>();
+builder.Services.AddScoped<CloudAccountService>();
+builder.Services.AddHostedService<SyncWorker>();
 builder.Services.AddHealthChecks().AddDbContextCheck<AppDbContext>();
 builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(data, "keys")))
     .SetApplicationName("BiStudent");
@@ -195,6 +213,10 @@ app.MapGet("/register", (HttpContext http) => http.Request.Path.Value!.EndsWith(
     : Results.Redirect("/register/"));
 app.MapApi();
 app.MapEnrollment();
+app.MapSync();
+var sync = app.Services.GetRequiredService<SyncService>();
+var recognition = app.Services.GetRequiredService<RecognitionService>();
+sync.FacesChanged += recognition.Invalidate;
 
 using (var scope = app.Services.CreateScope())
 {
