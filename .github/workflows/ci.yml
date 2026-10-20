@@ -31,6 +31,28 @@ jobs:
           $result = Join-Path $exe.DirectoryName 'diagnostics/result.txt'
           if ($p.ExitCode -ne 0 -or (Get-Content $result) -ne 'OK') { Get-Content (Join-Path $exe.DirectoryName 'self-test-error.txt') -ErrorAction SilentlyContinue; exit 1 }
 
+  firebase:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Firebase Emulator tests
+        env:
+          FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8080
+        run: >
+          npx --yes firebase-tools@14 emulators:exec --only auth,firestore --project demo-bistudent
+          "dotnet test BiStudent.Tests -- --filter-class BiStudent.Tests.FirebaseEmulatorTests --filter-class BiStudent.Tests.FirebaseSyncScenarioTests"
+
   docker:
     runs-on: ubuntu-24.04
     needs: build-test

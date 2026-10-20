@@ -21,6 +21,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
     public DbSet<FaceSubmission> FaceSubmissions => Set<FaceSubmission>();
     public DbSet<FaceSubmissionImage> FaceSubmissionImages => Set<FaceSubmissionImage>();
+    public DbSet<SyncLink> SyncLinks => Set<SyncLink>();
+    public DbSet<SyncOutboxEntry> SyncOutbox => Set<SyncOutboxEntry>();
+    public DbSet<SyncAlias> SyncAliases => Set<SyncAlias>();
+
+    /// Идёт применение изменений из Firestore: не ставить их в очередь и не добавлять членство автоматически.
+    public bool ApplyingRemote { get; set; }
 
     public IQueryable<GroupMembership> MembershipsOn(DateOnly date) =>
         GroupMemberships.Where(x => x.From <= date && (x.To == null || x.To >= date));
@@ -30,6 +36,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     private void AddInitialMemberships()
     {
+        if (ApplyingRemote) return;
         foreach (var entry in ChangeTracker.Entries<Student>().Where(x => x.State == EntityState.Added))
         {
             var student = entry.Entity;
@@ -61,6 +68,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     protected override void OnModelCreating(ModelBuilder model)
     {
         model.Entity<Teacher>().HasIndex(x => x.Login).IsUnique();
+        model.Entity<Teacher>().HasIndex(x => x.FirebaseUid).IsUnique();
+        model.Entity<SyncLink>().HasIndex(x => new { x.Table, x.LocalId }).IsUnique();
+        model.Entity<SyncLink>().HasIndex(x => new { x.Table, x.CloudId }).IsUnique();
+        model.Entity<SyncAlias>().HasIndex(x => new { x.Table, x.CloudId }).IsUnique();
+        model.Entity<SyncOutboxEntry>().ToTable("SyncOutbox").HasIndex(x => new { x.Table, x.LocalId });
         model.Entity<Group>().HasIndex(x => x.Name).IsUnique();
         model.Entity<AppSetting>().HasKey(x => x.Key);
         model.Entity<SlotCancellation>().HasIndex(x => new { x.SlotId, x.Date }).IsUnique();

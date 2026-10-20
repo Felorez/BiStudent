@@ -481,13 +481,108 @@ namespace BiStudent.Server.Data.Migrations
                     b.ToTable("Students");
                 });
 
+            modelBuilder.Entity("BiStudent.Server.Data.SyncAlias", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CanonicalCloudId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CloudId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Table")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Table", "CloudId")
+                        .IsUnique();
+
+                    b.ToTable("SyncAliases");
+                });
+
+            modelBuilder.Entity("BiStudent.Server.Data.SyncLink", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CloudId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("CloudUpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("LocalId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Table")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Table", "CloudId")
+                        .IsUnique();
+
+                    b.HasIndex("Table", "LocalId")
+                        .IsUnique();
+
+                    b.ToTable("SyncLinks");
+                });
+
+            modelBuilder.Entity("BiStudent.Server.Data.SyncOutboxEntry", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CloudId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Deleted")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("LocalId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("QueuedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Table")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Table", "LocalId");
+
+                    b.ToTable("SyncOutbox", (string)null);
+                });
+
             modelBuilder.Entity("BiStudent.Server.Data.Teacher", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ClaimToken")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FirebaseUid")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("FullName")
@@ -519,6 +614,9 @@ namespace BiStudent.Server.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("FirebaseUid")
+                        .IsUnique();
 
                     b.HasIndex("Login")
                         .IsUnique();

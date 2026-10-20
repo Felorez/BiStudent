@@ -16,6 +16,8 @@ public sealed record TokenResponse(string AccessToken, long ExpiresIn, string? R
 public sealed record TeacherDto(int Id, string FullName, string Login, bool IsAdmin = false, bool MustChangePassword = false, int PendingFaceSubmissions = 0);
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
+public sealed record SyncStatusDto(bool Enabled, string State, DateTimeOffset? LastSuccessAt, int Pending, string? Error);
+
 public sealed record TeacherAccountDto(int Id, string Login, string FullName, bool IsAdmin, bool IsActive, bool MustChangePassword, DateTime CreatedAt, DateTime? LastLoginAt);
 public sealed record SaveTeacherRequest(string Login, string FullName, bool IsAdmin, bool IsActive);
 public sealed record TemporaryPasswordDto(string Login, string Password);

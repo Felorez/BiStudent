@@ -3,6 +3,7 @@ using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using BiStudent.Contracts;
 using BiStudent.Server.Data;
+using BiStudent.Server.Sync;
 using Microsoft.EntityFrameworkCore;
 
 namespace BiStudent.Server.Services;
@@ -187,6 +188,8 @@ public sealed class EnrollmentService(AppDbContext db, RecognitionService recogn
                     .SetProperty(x => x.ReviewedAt, reviewedAt)
                     .SetProperty(x => x.ReviewedByTeacherId, teacherId));
             if (updated != 1) throw new InvalidOperationException("Заявка уже рассмотрена.");
+            // ExecuteUpdate идёт мимо ChangeTracker, поэтому в очередь Firestore ставим вручную.
+            SyncCaptureInterceptor.Enqueue<FaceSubmission>(db, id);
             var images = await db.FaceSubmissionImages.Where(x => x.SubmissionId == id).OrderBy(x => x.Id).ToListAsync();
             var crops = images.Select(x => recognition.UnprotectImage(x.ProtectedImage)).ToList();
             var old = await db.FaceSamples.Where(x => x.StudentId == submission.StudentId).ToListAsync();
@@ -218,6 +221,8 @@ public sealed class EnrollmentService(AppDbContext db, RecognitionService recogn
                     .SetProperty(x => x.ReviewedAt, reviewedAt)
                     .SetProperty(x => x.ReviewedByTeacherId, teacherId));
             if (updated != 1) throw new InvalidOperationException("Заявка уже рассмотрена.");
+            // ExecuteUpdate идёт мимо ChangeTracker, поэтому в очередь Firestore ставим вручную.
+            SyncCaptureInterceptor.Enqueue<FaceSubmission>(db, id);
             var images = await db.FaceSubmissionImages.Where(x => x.SubmissionId == id).ToListAsync();
             db.FaceSubmissionImages.RemoveRange(images);
             await db.SaveChangesAsync();

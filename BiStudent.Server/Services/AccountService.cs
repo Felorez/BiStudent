@@ -2,12 +2,13 @@ using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using BiStudent.Contracts;
 using BiStudent.Server.Data;
+using BiStudent.Server.Firebase;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
 namespace BiStudent.Server.Services;
 
-public sealed class AccountService(AppDbContext db, IPasswordHasher<Teacher> hasher)
+public sealed class AccountService(AppDbContext db, IPasswordHasher<Teacher> hasher, CloudAccountService cloud)
 {
     private const string PasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
     private static readonly Regex LoginPattern = new(@"^[A-Za-z0-9._-]{3,32}$", RegexOptions.CultureInvariant);
@@ -28,6 +29,16 @@ public sealed class AccountService(AppDbContext db, IPasswordHasher<Teacher> has
             teacher.PasswordHash = hasher.HashPassword(teacher, password);
             db.Teachers.Add(teacher);
             await db.SaveChangesAsync();
+            if (cloud.Enabled)
+            {
+                try { await cloud.CreateAccountAsync(teacher, password, CancellationToken.None); }
+                catch
+                {
+                    db.Teachers.Remove(teacher);
+                    await db.SaveChangesAsync();
+                    throw;
+                }
+            }
             return new TemporaryPasswordDto(login, password);
         }
         finally { accountGate.Release(); }
@@ -41,6 +52,7 @@ public sealed class AccountService(AppDbContext db, IPasswordHasher<Teacher> has
             var teacher = await db.Teachers.SingleOrDefaultAsync(x => x.Id == id)
                 ?? throw new KeyNotFoundException("Преподаватель не найден.");
             var (login, name) = await ValidateAsync(request, id);
+            if (cloud.LoginChangeBlockedReason(teacher, login) is { } loginBlocked) throw new InvalidOperationException(loginBlocked);
             if (id == actorId && (!request.IsAdmin || !request.IsActive))
                 throw new InvalidOperationException("Нельзя снять с себя права администратора или отключить свою учётную запись.");
             if (teacher.IsAdmin && teacher.IsActive && (!request.IsAdmin || !request.IsActive) &&
@@ -66,7 +78,11 @@ public sealed class AccountService(AppDbContext db, IPasswordHasher<Teacher> has
         {
             var teacher = await db.Teachers.SingleOrDefaultAsync(x => x.Id == id)
                 ?? throw new KeyNotFoundException("Преподаватель не найден.");
+            if (cloud.ResetPasswordBlockedReason(teacher) is { } resetBlocked) throw new InvalidOperationException(resetBlocked);
             var password = RandomNumberGenerator.GetString(PasswordAlphabet, 10);
+            // Непривязанная учётка получает аккаунт Firebase с этим временным паролем.
+            if (cloud.Enabled && teacher.FirebaseUid is null)
+                await cloud.LinkWithPasswordAsync(teacher, password, CancellationToken.None);
             teacher.PasswordHash = hasher.HashPassword(teacher, password);
             teacher.MustChangePassword = true;
             teacher.SecurityStamp = Guid.NewGuid().ToString("N");

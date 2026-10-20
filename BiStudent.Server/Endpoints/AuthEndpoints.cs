@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using BiStudent.Contracts;
 using BiStudent.Server.Data;
+using BiStudent.Server.Firebase;
 using BiStudent.Server.Services;
 using Microsoft.AspNetCore.Authentication.BearerToken;
 using Microsoft.AspNetCore.Identity;
@@ -32,8 +33,15 @@ public static class AuthEndpoints
     }
 
     private static async Task<IResult> LoginAsync(LoginRequest request, AppDbContext db,
-        IPasswordHasher<Teacher> hasher, SessionGeneration sessions)
+        IPasswordHasher<Teacher> hasher, SessionGeneration sessions, CloudAccountService cloud, CancellationToken ct)
     {
+        if (cloud.Enabled)
+        {
+            var result = await cloud.SignInAsync(request.Login.Trim(), request.Password, ct);
+            return result.Teacher is { } signedIn
+                ? Results.SignIn(Principal(signedIn, sessions), authenticationScheme: BearerTokenDefaults.AuthenticationScheme)
+                : Results.Json(new ErrorDto(result.Error ?? "Не удалось войти."), statusCode: result.Status);
+        }
         var login = request.Login.Trim().ToLowerInvariant();
         var teacher = await db.Teachers.SingleOrDefaultAsync(x => x.Login.ToLower() == login);
         var verification = teacher is null ? PasswordVerificationResult.Failed
@@ -66,15 +74,18 @@ public static class AuthEndpoints
     }
 
     private static async Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, ClaimsPrincipal user,
-        AppDbContext db, IPasswordHasher<Teacher> hasher, SessionGeneration sessions)
+        AppDbContext db, IPasswordHasher<Teacher> hasher, SessionGeneration sessions, CloudAccountService cloud, CancellationToken ct)
     {
         var teacher = await db.Teachers.SingleAsync(x => x.Id == ApiEndpoints.TeacherId(user));
-        if (hasher.VerifyHashedPassword(teacher, teacher.PasswordHash, request.CurrentPassword) == PasswordVerificationResult.Failed)
+        // Привязанную к Firebase учётку проверяет Firebase: локальный хеш мог устареть после смены пароля на другом компьютере.
+        var checkedByCloud = cloud.Enabled && teacher.FirebaseUid is not null;
+        if (!checkedByCloud && hasher.VerifyHashedPassword(teacher, teacher.PasswordHash, request.CurrentPassword) == PasswordVerificationResult.Failed)
             throw new InvalidOperationException("Текущий пароль указан неверно.");
         if (request.NewPassword.Length < 8) throw new InvalidOperationException("Новый пароль должен содержать не меньше 8 символов.");
         if (request.NewPassword == request.CurrentPassword) throw new InvalidOperationException("Новый пароль должен отличаться от текущего.");
         if (string.Equals(request.NewPassword, teacher.Login, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Пароль не должен совпадать с логином.");
+        if (cloud.Enabled) await cloud.ChangePasswordAsync(teacher, request.CurrentPassword, request.NewPassword, ct);
         teacher.PasswordHash = hasher.HashPassword(teacher, request.NewPassword);
         teacher.MustChangePassword = false;
         teacher.SecurityStamp = Guid.NewGuid().ToString("N");
